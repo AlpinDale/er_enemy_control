@@ -107,6 +107,19 @@ std::string trim(const std::string &s) {
   return s.substr(start, end - start + 1);
 }
 
+bool parse_u32(const std::string &s, uint32_t &out) {
+  if (s.empty()) {
+    return false;
+  }
+  char *end = nullptr;
+  unsigned long v = std::strtoul(s.c_str(), &end, 0);
+  if (!end || end == s.c_str()) {
+    return false;
+  }
+  out = static_cast<uint32_t>(v);
+  return true;
+}
+
 void load_config() {
   g_team.enabled = true;
   g_team.offset = kDefaultTeamOffset;
@@ -260,19 +273,6 @@ uint32_t read_u32(const std::vector<uint8_t> &data, size_t off) {
          (static_cast<uint32_t>(data[off + 1]) << 8) |
          (static_cast<uint32_t>(data[off + 2]) << 16) |
          (static_cast<uint32_t>(data[off + 3]) << 24);
-}
-
-bool parse_u32(const std::string &s, uint32_t &out) {
-  if (s.empty()) {
-    return false;
-  }
-  char *end = nullptr;
-  unsigned long v = std::strtoul(s.c_str(), &end, 0);
-  if (!end || end == s.c_str()) {
-    return false;
-  }
-  out = static_cast<uint32_t>(v);
-  return true;
 }
 
 bool resolve_addresses() {
