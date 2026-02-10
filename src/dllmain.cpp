@@ -35,7 +35,7 @@ constexpr uint32_t kPosXOffset = 0x70;
 constexpr uint32_t kPosYOffset = 0x74;
 constexpr uint32_t kPosZOffset = 0x78;
 
-constexpr float kYOffset = 0.0f;
+constexpr float kYOffset = -0.875f;
 
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
@@ -56,6 +56,7 @@ const char kMaskTargetFn[] = "xxxxx????xxxx?xxx";
 
 Addresses g_addrs;
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_control_active{false};
 HANDLE g_thread = nullptr;
 
 void log_msg(const char *msg) {
@@ -288,6 +289,33 @@ void sync_position(uintptr_t actor_mgr, uintptr_t actor_ctrl,
   write_f32(dst_transform + kPosZOffset, read_f32(src_transform + kPosZOffset));
 }
 
+void align_player_to_target(uintptr_t actor_ctrl, uintptr_t player_ptr_addr) {
+  auto player_root = read_ptr(player_ptr_addr);
+  if (!player_root) {
+    return;
+  }
+
+  auto link_b = read_ptr(player_root + kLinkBOffset);
+  if (!link_b) {
+    return;
+  }
+
+  auto src_ctrl = read_ptr(link_b + kActorCtrlOffset);
+  if (!src_ctrl) {
+    return;
+  }
+
+  auto src_transform = read_ptr(src_ctrl + kActorCtrlTransformOffset);
+  auto dst_transform = read_ptr(actor_ctrl + kActorCtrlTransformOffset);
+  if (!src_transform || !dst_transform) {
+    return;
+  }
+
+  write_f32(dst_transform + kPosXOffset, read_f32(src_transform + kPosXOffset));
+  write_f32(dst_transform + kPosYOffset, read_f32(src_transform + kPosYOffset));
+  write_f32(dst_transform + kPosZOffset, read_f32(src_transform + kPosZOffset));
+}
+
 void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   auto target_fn = reinterpret_cast<TargetFn>(g_addrs.target_fn_addr);
@@ -308,16 +336,19 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   }
 
   set_control_flags(actor_mgr, actor_ctrl, true);
+  g_control_active.store(true);
 }
 
 void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   auto player_root = read_ptr(player_ptr_addr);
   if (player_root) {
+    align_player_to_target(actor_ctrl, player_ptr_addr);
     unlink_target(player_root);
   }
 
   set_control_flags(actor_mgr, actor_ctrl, false);
+  g_control_active.store(false);
 }
 
 void tick() {
@@ -345,6 +376,10 @@ void tick() {
     handle_f1(world_root, actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F2) & 1) {
     handle_f2(actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
+  }
+
+  if (g_control_active.load()) {
+    set_control_flags(actor_mgr, actor_ctrl, true);
   }
 
   sync_position(actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
