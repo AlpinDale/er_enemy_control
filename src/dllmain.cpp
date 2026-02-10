@@ -510,7 +510,7 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
 
   auto player_root = read_ptr(player_ptr_addr);
   if (player_root) {
-    link_target(player_root, reinterpret_cast<uintptr_t>(target));
+    link_target(player_root, target);
   }
 
   set_control_flags(actor_mgr, actor_ctrl, true);
