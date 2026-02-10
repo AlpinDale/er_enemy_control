@@ -66,6 +66,16 @@ std::string normalize_windows_path(const std::string &in) {
   return out;
 }
 
+std::string get_full_path(const std::string &path) {
+  char buffer[MAX_PATH * 4] = {};
+  DWORD len = GetFullPathNameA(path.c_str(), static_cast<DWORD>(sizeof(buffer)),
+                               buffer, nullptr);
+  if (len == 0 || len >= sizeof(buffer)) {
+    return path;
+  }
+  return std::string(buffer, len);
+}
+
 bool read_file(const std::string &path, std::string &out) {
   std::ifstream f(path, std::ios::binary);
   if (!f) {
@@ -306,6 +316,14 @@ int main(int argc, char **argv) {
     log_line("Failed to find dll: %s", dll_path.c_str());
     system("PAUSE");
     return 1;
+  }
+
+  exe_path = get_full_path(exe_path);
+  dll_path = get_full_path(dll_path);
+
+  char cwd[MAX_PATH * 4] = {};
+  if (GetCurrentDirectoryA(static_cast<DWORD>(sizeof(cwd)), cwd) != 0) {
+    log_line("CWD: %s", cwd);
   }
 
   log_line("Using exe: %s", exe_path.c_str());
