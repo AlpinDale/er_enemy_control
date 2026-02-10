@@ -1,5 +1,10 @@
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdarg>
+#include <cstring>
+#include <string>
+#include <vector>
 #include <windows.h>
 
 #include "pattern_scan.h"
@@ -58,11 +63,26 @@ Addresses g_addrs;
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_control_active{false};
 HANDLE g_thread = nullptr;
+const char *kLogPath = "erd_enemy_control.log";
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
   OutputDebugStringA(msg);
   OutputDebugStringA("\n");
+}
+
+void log_line(const char *fmt, ...) {
+  FILE *f = std::fopen(kLogPath, "a");
+  if (!f) {
+    return;
+  }
+  std::fprintf(f, "[EREnemyControl] ");
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(f, fmt, args);
+  va_end(args);
+  std::fputc('\n', f);
+  std::fclose(f);
 }
 
 uintptr_t read_ptr(uintptr_t addr) {
@@ -119,6 +139,40 @@ void write_f32(uintptr_t addr, float value) {
     return;
   }
   *reinterpret_cast<float *>(addr) = value;
+}
+
+bool safe_read(uintptr_t addr, void *out, size_t size) {
+  if (addr == 0 || out == nullptr || size == 0) {
+    return false;
+  }
+#if defined(_MSC_VER)
+  __try {
+    std::memcpy(out, reinterpret_cast<const void *>(addr), size);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+#else
+  std::memcpy(out, reinterpret_cast<const void *>(addr), size);
+  return true;
+#endif
+}
+
+bool capture_snapshot(uintptr_t base, size_t size, std::vector<uint8_t> &out) {
+  out.resize(size);
+  return safe_read(base, out.data(), size);
+}
+
+uint16_t read_u16(const std::vector<uint8_t> &data, size_t off) {
+  return static_cast<uint16_t>(data[off]) |
+         (static_cast<uint16_t>(data[off + 1]) << 8);
+}
+
+uint32_t read_u32(const std::vector<uint8_t> &data, size_t off) {
+  return static_cast<uint32_t>(data[off]) |
+         (static_cast<uint32_t>(data[off + 1]) << 8) |
+         (static_cast<uint32_t>(data[off + 2]) << 16) |
+         (static_cast<uint32_t>(data[off + 3]) << 24);
 }
 
 bool resolve_addresses() {
@@ -316,16 +370,140 @@ void align_player_to_target(uintptr_t actor_ctrl, uintptr_t player_ptr_addr) {
   write_f32(dst_transform + kPosZOffset, read_f32(src_transform + kPosZOffset));
 }
 
-void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
-               uintptr_t player_ptr_addr) {
+uintptr_t get_current_target(uintptr_t world_root, uintptr_t actor_mgr) {
   auto target_fn = reinterpret_cast<TargetFn>(g_addrs.target_fn_addr);
   if (!target_fn) {
-    return;
+    return 0;
   }
-
   void *target =
       target_fn(reinterpret_cast<void *>(world_root),
                 reinterpret_cast<void *>(actor_mgr + kTargetContextOffset));
+  return reinterpret_cast<uintptr_t>(target);
+}
+
+void scan_team_candidates(uintptr_t player_root, uintptr_t target_actor) {
+  if (!player_root || !target_actor) {
+    log_line("team scan: missing pointers (player=0x%llx target=0x%llx)",
+             static_cast<unsigned long long>(player_root),
+             static_cast<unsigned long long>(target_actor));
+    return;
+  }
+
+  constexpr size_t kScanSize = 0x800;
+  constexpr size_t kMaxCandidates = 200;
+  std::vector<uint8_t> p1, t1, p2, t2;
+
+  if (!capture_snapshot(player_root, kScanSize, p1) ||
+      !capture_snapshot(target_actor, kScanSize, t1)) {
+    log_line("team scan: snapshot failed");
+    return;
+  }
+
+  Sleep(50);
+
+  if (!capture_snapshot(player_root, kScanSize, p2) ||
+      !capture_snapshot(target_actor, kScanSize, t2)) {
+    log_line("team scan: snapshot2 failed");
+    return;
+  }
+
+  log_line("=== team scan ===");
+  log_line("player_root=0x%llx target=0x%llx size=0x%zx",
+           static_cast<unsigned long long>(player_root),
+           static_cast<unsigned long long>(target_actor), kScanSize);
+
+  size_t count = 0;
+  log_line("u8 candidates (<= 0x40):");
+  for (size_t i = 0; i < kScanSize; ++i) {
+    uint8_t pv = p1[i];
+    uint8_t tv = t1[i];
+    if (pv == tv) {
+      continue;
+    }
+    if (pv != p2[i] || tv != t2[i]) {
+      continue;
+    }
+    if (pv > 0x40 || tv > 0x40) {
+      continue;
+    }
+    log_line("  +0x%03zx p=%u t=%u diff=0x%02x", i, pv, tv,
+             static_cast<unsigned>(pv ^ tv));
+    if (++count >= kMaxCandidates) {
+      log_line("  ... truncated");
+      break;
+    }
+  }
+
+  count = 0;
+  log_line("u16 candidates (<= 0x400):");
+  for (size_t i = 0; i + 1 < kScanSize; ++i) {
+    uint16_t pv = read_u16(p1, i);
+    uint16_t tv = read_u16(t1, i);
+    if (pv == tv) {
+      continue;
+    }
+    if (pv != read_u16(p2, i) || tv != read_u16(t2, i)) {
+      continue;
+    }
+    if (pv > 0x400 || tv > 0x400) {
+      continue;
+    }
+    log_line("  +0x%03zx p=%u t=%u diff=0x%04x", i, pv, tv,
+             static_cast<unsigned>(pv ^ tv));
+    if (++count >= kMaxCandidates) {
+      log_line("  ... truncated");
+      break;
+    }
+  }
+
+  count = 0;
+  log_line("u32 candidates (<= 0x10000):");
+  for (size_t i = 0; i + 3 < kScanSize; ++i) {
+    uint32_t pv = read_u32(p1, i);
+    uint32_t tv = read_u32(t1, i);
+    if (pv == tv) {
+      continue;
+    }
+    if (pv != read_u32(p2, i) || tv != read_u32(t2, i)) {
+      continue;
+    }
+    if (pv > 0x10000 || tv > 0x10000) {
+      continue;
+    }
+    log_line("  +0x%03zx p=%u t=%u diff=0x%08x", i, pv, tv,
+             static_cast<unsigned>(pv ^ tv));
+    if (++count >= kMaxCandidates) {
+      log_line("  ... truncated");
+      break;
+    }
+  }
+
+  log_line("=== end team scan ===");
+}
+
+void debug_team_scan(uintptr_t world_root, uintptr_t actor_mgr,
+                     uintptr_t player_ptr_addr) {
+  auto player_root = read_ptr(player_ptr_addr);
+  if (!player_root) {
+    log_line("team scan: player_root null");
+    return;
+  }
+
+  uintptr_t target = read_ptr(player_root + kLinkBOffset);
+  if (!target) {
+    target = get_current_target(world_root, actor_mgr);
+  }
+  if (!target) {
+    log_line("team scan: no target (lock on first)");
+    return;
+  }
+  scan_team_candidates(player_root, target);
+}
+
+void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
+               uintptr_t player_ptr_addr) {
+  uintptr_t target =
+      get_current_target(world_root, actor_mgr);
   if (!target) {
     return;
   }
@@ -376,6 +554,8 @@ void tick() {
     handle_f1(world_root, actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F2) & 1) {
     handle_f2(actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
+  } else if (GetAsyncKeyState(VK_F3) & 1) {
+    debug_team_scan(world_root, actor_mgr, g_addrs.player_ptr_addr);
   }
 
   if (g_control_active.load()) {

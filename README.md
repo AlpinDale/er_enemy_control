@@ -5,6 +5,7 @@ A clean-room implementation of the [Enemy control](https://www.nexusmods.com/eld
 ## Usage
 - F1: attach player control to a target NPC.
 - F2: release control and restore state.
+- F3: dump team-field candidates to `erd_enemy_control.log` (debug helper).
 - Continuous position sync while controlled (with a small Y-offset).
 
 ## Build (Windows, MSVC)
