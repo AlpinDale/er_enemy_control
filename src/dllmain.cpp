@@ -42,8 +42,9 @@ constexpr uint32_t kPosYOffset = 0x74;
 constexpr uint32_t kPosZOffset = 0x78;
 
 constexpr float kYOffset = -0.875f;
-constexpr uint32_t kDefaultTeamOffset = 0x168;
+constexpr uint32_t kDefaultTeamOffset = 0x1C0;
 constexpr uint32_t kDefaultTeamSize = 1;
+constexpr uint32_t kAutoTeamOffsets[] = {0x1B1, 0x1C0, 0x1CC};
 
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
@@ -70,13 +71,21 @@ const char *kLogPath = "erd_enemy_control.log";
 
 struct TeamOverride {
   bool enabled = false;
+  bool use_config = false;
   uint32_t offset = 0;
   uint32_t size = 1;
   uint32_t original = 0;
   bool has_original = false;
 };
 
-TeamOverride g_team{true, kDefaultTeamOffset, kDefaultTeamSize, 0, false};
+struct AutoTeamSlot {
+  uint32_t offset = 0;
+  uint8_t original = 0;
+  bool applied = false;
+};
+
+TeamOverride g_team{true, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false};
+AutoTeamSlot g_auto_team[sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0])]{};
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -122,18 +131,18 @@ bool parse_u32(const std::string &s, uint32_t &out) {
 
 void load_config() {
   g_team.enabled = true;
+  g_team.use_config = false;
   g_team.offset = kDefaultTeamOffset;
   g_team.size = kDefaultTeamSize;
 
   bool saw_enabled = false;
-  bool cfg_found = false;
   FILE *f = std::fopen("erd_enemy_control.ini", "r");
   if (!f) {
     log_line("team override default: offset=0x%x size=%u", g_team.offset,
              g_team.size);
     return;
   }
-  cfg_found = true;
+  g_team.use_config = true;
   char line[256] = {};
   while (std::fgets(line, sizeof(line), f)) {
     std::string s = trim(line);
@@ -162,7 +171,8 @@ void load_config() {
 
   if (g_team.enabled) {
     log_line("%s team override enabled: offset=0x%x size=%u",
-             cfg_found ? "config" : "default", g_team.offset, g_team.size);
+             g_team.use_config ? "config" : "default", g_team.offset,
+             g_team.size);
   } else if (saw_enabled) {
     log_line("team override disabled by config");
   }
@@ -600,6 +610,89 @@ void debug_team_scan(uintptr_t world_root, uintptr_t actor_mgr,
   scan_team_candidates(player_root, target);
 }
 
+void apply_team_override_config(uintptr_t player_root, uintptr_t target) {
+  if (!g_team.enabled || !g_team.use_config) {
+    return;
+  }
+  uint32_t player_val = 0;
+  uint32_t target_val = 0;
+  if (safe_read(player_root + g_team.offset, &player_val, g_team.size) &&
+      safe_read(target + g_team.offset, &target_val, g_team.size)) {
+    g_team.original = target_val;
+    g_team.has_original = true;
+    if (safe_write(target + g_team.offset, &player_val, g_team.size)) {
+      log_line("team override (config): off=0x%x size=%u player=%u target=%u",
+               g_team.offset, g_team.size, player_val, target_val);
+    } else {
+      log_line("team override (config): write failed at off=0x%x",
+               g_team.offset);
+    }
+  } else {
+    log_line("team override (config): read failed at off=0x%x", g_team.offset);
+  }
+}
+
+void restore_team_override_config(uintptr_t target) {
+  if (!g_team.enabled || !g_team.use_config || !g_team.has_original) {
+    return;
+  }
+  if (safe_write(target + g_team.offset, &g_team.original, g_team.size)) {
+    log_line("team override restored (config): off=0x%x size=%u value=%u",
+             g_team.offset, g_team.size, g_team.original);
+  } else {
+    log_line("team override restore failed (config) at off=0x%x", g_team.offset);
+  }
+  g_team.has_original = false;
+}
+
+void apply_team_override_auto(uintptr_t player_root, uintptr_t target) {
+  if (!g_team.enabled || g_team.use_config) {
+    return;
+  }
+  for (size_t i = 0; i < sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0]);
+       ++i) {
+    uint32_t offset = kAutoTeamOffsets[i];
+    uint8_t player_val = 0;
+    uint8_t target_val = 0;
+    if (!safe_read(player_root + offset, &player_val, sizeof(player_val)) ||
+        !safe_read(target + offset, &target_val, sizeof(target_val))) {
+      continue;
+    }
+    if (player_val == target_val) {
+      continue;
+    }
+    if (player_val > 32 || target_val > 32) {
+      continue;
+    }
+    g_auto_team[i].offset = offset;
+    g_auto_team[i].original = target_val;
+    g_auto_team[i].applied = true;
+    if (safe_write(target + offset, &player_val, sizeof(player_val))) {
+      log_line("team override (auto): off=0x%x player=%u target=%u", offset,
+               player_val, target_val);
+    }
+  }
+}
+
+void restore_team_override_auto(uintptr_t target) {
+  if (!g_team.enabled || g_team.use_config) {
+    return;
+  }
+  for (size_t i = 0; i < sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0]);
+       ++i) {
+    if (!g_auto_team[i].applied) {
+      continue;
+    }
+    uint32_t offset = g_auto_team[i].offset;
+    uint8_t original = g_auto_team[i].original;
+    if (safe_write(target + offset, &original, sizeof(original))) {
+      log_line("team override restored (auto): off=0x%x value=%u", offset,
+               original);
+    }
+    g_auto_team[i].applied = false;
+  }
+}
+
 void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   uintptr_t target =
@@ -614,20 +707,10 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   }
 
   if (g_team.enabled && player_root) {
-    uint32_t player_val = 0;
-    uint32_t target_val = 0;
-    if (safe_read(player_root + g_team.offset, &player_val, g_team.size) &&
-        safe_read(target + g_team.offset, &target_val, g_team.size)) {
-      g_team.original = target_val;
-      g_team.has_original = true;
-      if (safe_write(target + g_team.offset, &player_val, g_team.size)) {
-        log_line("team override: off=0x%x size=%u player=%u target=%u",
-                 g_team.offset, g_team.size, player_val, target_val);
-      } else {
-        log_line("team override: write failed at off=0x%x", g_team.offset);
-      }
+    if (g_team.use_config) {
+      apply_team_override_config(player_root, target);
     } else {
-      log_line("team override: read failed at off=0x%x", g_team.offset);
+      apply_team_override_auto(player_root, target);
     }
   }
 
@@ -643,20 +726,16 @@ void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
     unlink_target(player_root);
   }
 
-  if (g_team.enabled && g_team.has_original) {
-    uintptr_t target = 0;
-    if (player_root) {
-      target = read_ptr(player_root + kLinkBOffset);
+  uintptr_t target = 0;
+  if (player_root) {
+    target = read_ptr(player_root + kLinkBOffset);
+  }
+  if (g_team.enabled && target) {
+    if (g_team.use_config) {
+      restore_team_override_config(target);
+    } else {
+      restore_team_override_auto(target);
     }
-    if (target) {
-      if (safe_write(target + g_team.offset, &g_team.original, g_team.size)) {
-        log_line("team override restored: off=0x%x size=%u value=%u",
-                 g_team.offset, g_team.size, g_team.original);
-      } else {
-        log_line("team override restore failed at off=0x%x", g_team.offset);
-      }
-    }
-    g_team.has_original = false;
   }
 
   set_control_flags(actor_mgr, actor_ctrl, false);

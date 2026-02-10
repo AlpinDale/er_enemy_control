@@ -32,12 +32,13 @@ Logging:
 
 ## Team override (experimental)
 The mod now **automatically** tries to align the target NPC's team to the player
-using a default offset (`0x168`, size `1`). If it doesn't help (or causes issues),
-you can override or disable it with `erd_enemy_control.ini` in the game folder:
+using a small built-in offset list (0x1B1, 0x1C0, 0x1CC). If it doesn't help
+(or causes issues), you can override or disable it with `erd_enemy_control.ini`
+in the game folder:
 
 ```
 team_enabled=1
-team_offset=0x168
+team_offset=0x1C0
 team_size=1
 ```
 
