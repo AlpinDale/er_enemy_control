@@ -2,12 +2,28 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <cstdarg>
 #include <fstream>
 #include <string>
 #include <vector>
 #include <windows.h>
 
 namespace {
+
+const char *kLogPath = "erd_launcher.log";
+
+void log_line(const char *fmt, ...) {
+  FILE *f = std::fopen(kLogPath, "a");
+  if (!f) {
+    return;
+  }
+  va_list args;
+  va_start(args, fmt);
+  std::vfprintf(f, fmt, args);
+  va_end(args);
+  std::fputc('\n', f);
+  std::fclose(f);
+}
 
 bool file_exists(const char *path) {
   DWORD attrs = GetFileAttributesA(path);
@@ -154,12 +170,42 @@ bool find_elden_ring_via_steam(std::string &out_exe) {
   return false;
 }
 
+std::string format_win_error(DWORD err) {
+  char *buffer = nullptr;
+  DWORD size = FormatMessageA(
+      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+      nullptr, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+      reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+  std::string result;
+  if (size && buffer) {
+    result.assign(buffer, size);
+    LocalFree(buffer);
+  }
+  while (!result.empty() &&
+         (result.back() == '\r' || result.back() == '\n')) {
+    result.pop_back();
+  }
+  return result;
+}
+
 void print_last_error(const char *msg) {
   DWORD err = GetLastError();
-  std::fprintf(stderr, "%s (err=%lu)\n", msg, static_cast<unsigned long>(err));
+  std::string detail = format_win_error(err);
+  if (!detail.empty()) {
+    std::fprintf(stderr, "%s (err=%lu: %s)\n", msg,
+                 static_cast<unsigned long>(err), detail.c_str());
+    log_line("%s (err=%lu: %s)", msg, static_cast<unsigned long>(err),
+             detail.c_str());
+  } else {
+    std::fprintf(stderr, "%s (err=%lu)\n", msg,
+                 static_cast<unsigned long>(err));
+    log_line("%s (err=%lu)", msg, static_cast<unsigned long>(err));
+  }
 }
 
 bool inject_dll(HANDLE process, const char *dll_path) {
+  log_line("Injecting DLL: %s", dll_path);
   const size_t len = std::strlen(dll_path) + 1;
   void *remote = VirtualAllocEx(process, nullptr, len, MEM_COMMIT | MEM_RESERVE,
                                 PAGE_READWRITE);
@@ -200,6 +246,19 @@ bool inject_dll(HANDLE process, const char *dll_path) {
   }
 
   WaitForSingleObject(thread, INFINITE);
+  DWORD exit_code = 0;
+  if (GetExitCodeThread(thread, &exit_code)) {
+    log_line("LoadLibraryA returned 0x%lx",
+             static_cast<unsigned long>(exit_code));
+    if (exit_code == 0) {
+      print_last_error("LoadLibraryA returned NULL");
+      CloseHandle(thread);
+      VirtualFreeEx(process, remote, 0, MEM_RELEASE);
+      return false;
+    }
+  } else {
+    print_last_error("Unable to query injection thread result");
+  }
   CloseHandle(thread);
   VirtualFreeEx(process, remote, 0, MEM_RELEASE);
   return true;
@@ -208,11 +267,13 @@ bool inject_dll(HANDLE process, const char *dll_path) {
 } // namespace
 
 int main(int argc, char **argv) {
+  log_line("=== Launcher start ===");
   std::string exe_path;
   if (argc > 1) {
     exe_path = argv[1];
     if (!file_exists(exe_path.c_str())) {
       std::fprintf(stderr, "Failed to find \"%s\"\n", exe_path.c_str());
+      log_line("Failed to find exe: %s", exe_path.c_str());
       system("PAUSE");
       return 1;
     }
@@ -220,6 +281,7 @@ int main(int argc, char **argv) {
     if (!find_elden_ring_via_steam(exe_path)) {
       std::fprintf(stderr, "Failed to find \"eldenring.exe\" (pass full path "
                            "or run from the game folder)\n");
+      log_line("Failed to locate eldenring.exe via Steam");
       system("PAUSE");
       return 1;
     }
@@ -241,9 +303,13 @@ int main(int argc, char **argv) {
 
   if (!file_exists(dll_path.c_str())) {
     std::fprintf(stderr, "Failed to find \"%s\"\n", dll_path.c_str());
+    log_line("Failed to find dll: %s", dll_path.c_str());
     system("PAUSE");
     return 1;
   }
+
+  log_line("Using exe: %s", exe_path.c_str());
+  log_line("Using dll: %s", dll_path.c_str());
 
   if (!SetEnvironmentVariableA("SteamAppId", "1245620")) {
     print_last_error("Failed to set SteamAppId");
@@ -274,8 +340,10 @@ int main(int argc, char **argv) {
 
   ResumeThread(pi.hThread);
   std::printf("Elden Ring is running...\n");
+  log_line("Elden Ring is running...");
   WaitForSingleObject(pi.hProcess, INFINITE);
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+  log_line("=== Launcher end ===");
   return 0;
 }
