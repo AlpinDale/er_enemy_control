@@ -6,6 +6,7 @@ A clean-room implementation of the [Enemy control](https://www.nexusmods.com/eld
 - F1: attach player control to a target NPC.
 - F2: release control and restore state.
 - F3: dump team-field candidates to `erd_enemy_control.log` (debug helper).
+- F4: reload `erd_enemy_control.ini` (team override config).
 - Continuous position sync while controlled (with a small Y-offset).
 
 ## Build (Windows, MSVC)
@@ -28,3 +29,18 @@ Auto-detection:
 
 Logging:
 - The launcher writes `erd_launcher.log` in its working directory.
+
+## Team override (experimental)
+The mod now **automatically** tries to align the target NPC's team to the player
+using a default offset (`0x168`, size `1`). If it doesn't help (or causes issues),
+you can override or disable it with `erd_enemy_control.ini` in the game folder:
+
+```
+team_enabled=1
+team_offset=0x168
+team_size=1
+```
+
+Set `team_enabled=0` to disable the override. Press F4 to reload the config while
+the game is running. If the chosen offset is wrong, it can break targeting or
+crash, so try a few candidates and revert.

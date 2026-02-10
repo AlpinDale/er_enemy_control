@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cstdlib>
 #include <windows.h>
 
 #include "pattern_scan.h"
@@ -41,6 +42,8 @@ constexpr uint32_t kPosYOffset = 0x74;
 constexpr uint32_t kPosZOffset = 0x78;
 
 constexpr float kYOffset = -0.875f;
+constexpr uint32_t kDefaultTeamOffset = 0x168;
+constexpr uint32_t kDefaultTeamSize = 1;
 
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
@@ -65,6 +68,16 @@ std::atomic<bool> g_control_active{false};
 HANDLE g_thread = nullptr;
 const char *kLogPath = "erd_enemy_control.log";
 
+struct TeamOverride {
+  bool enabled = false;
+  uint32_t offset = 0;
+  uint32_t size = 1;
+  uint32_t original = 0;
+  bool has_original = false;
+};
+
+TeamOverride g_team{true, kDefaultTeamOffset, kDefaultTeamSize, 0, false};
+
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
   OutputDebugStringA(msg);
@@ -83,6 +96,63 @@ void log_line(const char *fmt, ...) {
   va_end(args);
   std::fputc('\n', f);
   std::fclose(f);
+}
+
+std::string trim(const std::string &s) {
+  size_t start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) {
+    return std::string();
+  }
+  size_t end = s.find_last_not_of(" \t\r\n");
+  return s.substr(start, end - start + 1);
+}
+
+void load_config() {
+  g_team.enabled = true;
+  g_team.offset = kDefaultTeamOffset;
+  g_team.size = kDefaultTeamSize;
+
+  bool saw_enabled = false;
+  bool cfg_found = false;
+  FILE *f = std::fopen("erd_enemy_control.ini", "r");
+  if (!f) {
+    log_line("team override default: offset=0x%x size=%u", g_team.offset,
+             g_team.size);
+    return;
+  }
+  cfg_found = true;
+  char line[256] = {};
+  while (std::fgets(line, sizeof(line), f)) {
+    std::string s = trim(line);
+    if (s.empty() || s[0] == '#' || s[0] == ';') {
+      continue;
+    }
+    size_t eq = s.find('=');
+    if (eq == std::string::npos) {
+      continue;
+    }
+    std::string key = trim(s.substr(0, eq));
+    std::string val = trim(s.substr(eq + 1));
+    uint32_t parsed = 0;
+    if (key == "team_enabled" && parse_u32(val, parsed)) {
+      g_team.enabled = (parsed != 0);
+      saw_enabled = true;
+    } else if (key == "team_offset" && parse_u32(val, parsed)) {
+      g_team.offset = parsed;
+    } else if (key == "team_size" && parse_u32(val, parsed)) {
+      if (parsed == 1 || parsed == 2 || parsed == 4) {
+        g_team.size = parsed;
+      }
+    }
+  }
+  std::fclose(f);
+
+  if (g_team.enabled) {
+    log_line("%s team override enabled: offset=0x%x size=%u",
+             cfg_found ? "config" : "default", g_team.offset, g_team.size);
+  } else if (saw_enabled) {
+    log_line("team override disabled by config");
+  }
 }
 
 uintptr_t read_ptr(uintptr_t addr) {
@@ -158,6 +228,23 @@ bool safe_read(uintptr_t addr, void *out, size_t size) {
 #endif
 }
 
+bool safe_write(uintptr_t addr, const void *data, size_t size) {
+  if (addr == 0 || data == nullptr || size == 0) {
+    return false;
+  }
+#if defined(_MSC_VER)
+  __try {
+    std::memcpy(reinterpret_cast<void *>(addr), data, size);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+#else
+  std::memcpy(reinterpret_cast<void *>(addr), data, size);
+  return true;
+#endif
+}
+
 bool capture_snapshot(uintptr_t base, size_t size, std::vector<uint8_t> &out) {
   out.resize(size);
   return safe_read(base, out.data(), size);
@@ -173,6 +260,19 @@ uint32_t read_u32(const std::vector<uint8_t> &data, size_t off) {
          (static_cast<uint32_t>(data[off + 1]) << 8) |
          (static_cast<uint32_t>(data[off + 2]) << 16) |
          (static_cast<uint32_t>(data[off + 3]) << 24);
+}
+
+bool parse_u32(const std::string &s, uint32_t &out) {
+  if (s.empty()) {
+    return false;
+  }
+  char *end = nullptr;
+  unsigned long v = std::strtoul(s.c_str(), &end, 0);
+  if (!end || end == s.c_str()) {
+    return false;
+  }
+  out = static_cast<uint32_t>(v);
+  return true;
 }
 
 bool resolve_addresses() {
@@ -513,6 +613,24 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
     link_target(player_root, target);
   }
 
+  if (g_team.enabled && player_root) {
+    uint32_t player_val = 0;
+    uint32_t target_val = 0;
+    if (safe_read(player_root + g_team.offset, &player_val, g_team.size) &&
+        safe_read(target + g_team.offset, &target_val, g_team.size)) {
+      g_team.original = target_val;
+      g_team.has_original = true;
+      if (safe_write(target + g_team.offset, &player_val, g_team.size)) {
+        log_line("team override: off=0x%x size=%u player=%u target=%u",
+                 g_team.offset, g_team.size, player_val, target_val);
+      } else {
+        log_line("team override: write failed at off=0x%x", g_team.offset);
+      }
+    } else {
+      log_line("team override: read failed at off=0x%x", g_team.offset);
+    }
+  }
+
   set_control_flags(actor_mgr, actor_ctrl, true);
   g_control_active.store(true);
 }
@@ -523,6 +641,22 @@ void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
   if (player_root) {
     align_player_to_target(actor_ctrl, player_ptr_addr);
     unlink_target(player_root);
+  }
+
+  if (g_team.enabled && g_team.has_original) {
+    uintptr_t target = 0;
+    if (player_root) {
+      target = read_ptr(player_root + kLinkBOffset);
+    }
+    if (target) {
+      if (safe_write(target + g_team.offset, &g_team.original, g_team.size)) {
+        log_line("team override restored: off=0x%x size=%u value=%u",
+                 g_team.offset, g_team.size, g_team.original);
+      } else {
+        log_line("team override restore failed at off=0x%x", g_team.offset);
+      }
+    }
+    g_team.has_original = false;
   }
 
   set_control_flags(actor_mgr, actor_ctrl, false);
@@ -556,6 +690,8 @@ void tick() {
     handle_f2(actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F3) & 1) {
     debug_team_scan(world_root, actor_mgr, g_addrs.player_ptr_addr);
+  } else if (GetAsyncKeyState(VK_F4) & 1) {
+    load_config();
   }
 
   if (g_control_active.load()) {
@@ -566,6 +702,7 @@ void tick() {
 }
 
 DWORD WINAPI mod_thread(LPVOID) {
+  load_config();
   if (!resolve_addresses()) {
     log_msg("Address resolution failed");
     return 0;
