@@ -12,7 +12,7 @@ A clean-room implementation of the [Enemy control](https://www.nexusmods.com/eld
 ## Build (Windows, MSVC)
 
 ```
-cmake -S . -B build -A x64
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64
 cmake --build build --config Release
 ```
 
