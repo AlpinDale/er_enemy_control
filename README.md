@@ -31,16 +31,27 @@ Logging:
 - The launcher writes `erd_launcher.log` in its working directory.
 
 ## Team override (experimental)
-The mod **does not** change teams by default. If NPCs won't trade damage with
-enemies while controlled, you can try forcing the target's team/affinity to
-match the player by creating `erd_enemy_control.ini` in the game folder:
+The mod changes teams by default. It copies the player's team to the controlled NPC and (optionally) neutralizes
+the player while controlling. The defaults are:
 
 ```
 team_enabled=1
-team_offset=0x1C0
+team_offset=0x6C
 team_size=1
+player_neutralize=1
+player_neutral_value=0
+```
+
+If you want to override these or disable the behavior entirely, create
+`erd_enemy_control.ini` in the game folder:
+
+```
+team_enabled=1
+team_offset=0x6C
+team_size=1
+player_neutralize=1
+player_neutral_value=0
 ```
 
 Set `team_enabled=0` to disable the override. Press F4 to reload the config while
-the game is running. If the chosen offset is wrong, it can break targeting or
-crash, so try a few candidates and revert.
+the game is running.
