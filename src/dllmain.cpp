@@ -44,7 +44,6 @@ constexpr uint32_t kPosZOffset = 0x78;
 constexpr float kYOffset = -0.875f;
 constexpr uint32_t kDefaultTeamOffset = 0x1C0;
 constexpr uint32_t kDefaultTeamSize = 1;
-constexpr uint32_t kAutoTeamOffsets[] = {0x1B1, 0x1C0, 0x1CC};
 
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
@@ -78,14 +77,7 @@ struct TeamOverride {
   bool has_original = false;
 };
 
-struct AutoTeamSlot {
-  uint32_t offset = 0;
-  uint8_t original = 0;
-  bool applied = false;
-};
-
-TeamOverride g_team{true, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false};
-AutoTeamSlot g_auto_team[sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0])]{};
+TeamOverride g_team{false, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false};
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -130,7 +122,7 @@ bool parse_u32(const std::string &s, uint32_t &out) {
 }
 
 void load_config() {
-  g_team.enabled = true;
+  g_team.enabled = false;
   g_team.use_config = false;
   g_team.offset = kDefaultTeamOffset;
   g_team.size = kDefaultTeamSize;
@@ -138,8 +130,7 @@ void load_config() {
   bool saw_enabled = false;
   FILE *f = std::fopen("erd_enemy_control.ini", "r");
   if (!f) {
-    log_line("team override default: offset=0x%x size=%u", g_team.offset,
-             g_team.size);
+    log_line("team override disabled (no config)");
     return;
   }
   g_team.use_config = true;
@@ -175,6 +166,8 @@ void load_config() {
              g_team.size);
   } else if (saw_enabled) {
     log_line("team override disabled by config");
+  } else {
+    log_line("team override disabled (config present)");
   }
 }
 
@@ -645,54 +638,6 @@ void restore_team_override_config(uintptr_t target) {
   g_team.has_original = false;
 }
 
-void apply_team_override_auto(uintptr_t player_root, uintptr_t target) {
-  if (!g_team.enabled || g_team.use_config) {
-    return;
-  }
-  for (size_t i = 0; i < sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0]);
-       ++i) {
-    uint32_t offset = kAutoTeamOffsets[i];
-    uint8_t player_val = 0;
-    uint8_t target_val = 0;
-    if (!safe_read(player_root + offset, &player_val, sizeof(player_val)) ||
-        !safe_read(target + offset, &target_val, sizeof(target_val))) {
-      continue;
-    }
-    if (player_val == target_val) {
-      continue;
-    }
-    if (player_val > 32 || target_val > 32) {
-      continue;
-    }
-    g_auto_team[i].offset = offset;
-    g_auto_team[i].original = target_val;
-    g_auto_team[i].applied = true;
-    if (safe_write(target + offset, &player_val, sizeof(player_val))) {
-      log_line("team override (auto): off=0x%x player=%u target=%u", offset,
-               player_val, target_val);
-    }
-  }
-}
-
-void restore_team_override_auto(uintptr_t target) {
-  if (!g_team.enabled || g_team.use_config) {
-    return;
-  }
-  for (size_t i = 0; i < sizeof(kAutoTeamOffsets) / sizeof(kAutoTeamOffsets[0]);
-       ++i) {
-    if (!g_auto_team[i].applied) {
-      continue;
-    }
-    uint32_t offset = g_auto_team[i].offset;
-    uint8_t original = g_auto_team[i].original;
-    if (safe_write(target + offset, &original, sizeof(original))) {
-      log_line("team override restored (auto): off=0x%x value=%u", offset,
-               original);
-    }
-    g_auto_team[i].applied = false;
-  }
-}
-
 void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   uintptr_t target =
@@ -707,11 +652,7 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   }
 
   if (g_team.enabled && player_root) {
-    if (g_team.use_config) {
-      apply_team_override_config(player_root, target);
-    } else {
-      apply_team_override_auto(player_root, target);
-    }
+    apply_team_override_config(player_root, target);
   }
 
   set_control_flags(actor_mgr, actor_ctrl, true);
@@ -731,11 +672,7 @@ void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
     target = read_ptr(player_root + kLinkBOffset);
   }
   if (g_team.enabled && target) {
-    if (g_team.use_config) {
-      restore_team_override_config(target);
-    } else {
-      restore_team_override_auto(target);
-    }
+    restore_team_override_config(target);
   }
 
   set_control_flags(actor_mgr, actor_ctrl, false);

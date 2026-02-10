@@ -31,10 +31,9 @@ Logging:
 - The launcher writes `erd_launcher.log` in its working directory.
 
 ## Team override (experimental)
-The mod now **automatically** tries to align the target NPC's team to the player
-using a small built-in offset list (0x1B1, 0x1C0, 0x1CC). If it doesn't help
-(or causes issues), you can override or disable it with `erd_enemy_control.ini`
-in the game folder:
+The mod **does not** change teams by default. If NPCs won't trade damage with
+enemies while controlled, you can try forcing the target's team/affinity to
+match the player by creating `erd_enemy_control.ini` in the game folder:
 
 ```
 team_enabled=1
