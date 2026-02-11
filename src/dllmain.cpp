@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
