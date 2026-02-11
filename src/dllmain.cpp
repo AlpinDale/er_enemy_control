@@ -54,6 +54,8 @@ constexpr uint32_t kChrCtrlFlagsOffset = 0xF0;
 constexpr uint32_t kActionDisableLockOnBit = 1u << 2;
 constexpr uint32_t kActionDisableAbilityLockOnBit = 1u << 3;
 constexpr uint32_t kCtrlDisableHitBit = 1u << 1;
+
+constexpr uint32_t kFieldInsHandleOffset = 0x8;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -286,6 +288,31 @@ bool safe_read_ptr(uintptr_t addr, uintptr_t &out) {
   return safe_read(addr, &out, sizeof(out));
 }
 
+bool is_valid_chr_ins(uintptr_t ptr, uint8_t *team_out = nullptr) {
+  if (!ptr) {
+    return false;
+  }
+  uint8_t team = 0;
+  if (!safe_read(ptr + g_team.offset, &team, sizeof(team))) {
+    return false;
+  }
+  if (team > 77) {
+    return false;
+  }
+  uint32_t selector = 0;
+  if (!safe_read(ptr + kFieldInsHandleOffset, &selector, sizeof(selector))) {
+    return false;
+  }
+  uint32_t field_type = (selector >> 28) & 0xF;
+  if (field_type != 1) {
+    return false;
+  }
+  if (team_out) {
+    *team_out = team;
+  }
+  return true;
+}
+
 bool safe_write(uintptr_t addr, const void *data, size_t size) {
   if (addr == 0 || data == nullptr || size == 0) {
     return false;
@@ -304,23 +331,28 @@ bool safe_write(uintptr_t addr, const void *data, size_t size) {
 }
 
 uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl) {
+  if (is_valid_chr_ins(player_root)) {
+    return player_root;
+  }
   if (player_root) {
     uintptr_t chr_ctrl = 0;
     if (safe_read_ptr(player_root + kChrInsChrCtrlOffset, chr_ctrl) &&
         chr_ctrl) {
       uintptr_t owner = 0;
-      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) && owner) {
+      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) &&
+          is_valid_chr_ins(owner)) {
         return owner;
       }
     }
   }
   if (actor_ctrl) {
     uintptr_t owner = 0;
-    if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner) && owner) {
+    if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner) &&
+        is_valid_chr_ins(owner)) {
       return owner;
     }
   }
-  return player_root;
+  return 0;
 }
 
 uintptr_t resolve_chr_ctrl(uintptr_t chr_ins, uintptr_t fallback_ctrl) {
@@ -338,12 +370,25 @@ void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl
   g_player_override.has_action_flags = false;
   g_player_override.has_ctrl_flags = false;
 
+  if (!is_valid_chr_ins(player_chr)) {
+    log_line("player override: invalid player chr 0x%llx",
+             static_cast<unsigned long long>(player_chr));
+    return;
+  }
   auto chr_ctrl = resolve_chr_ctrl(player_chr, fallback_ctrl);
   if (!chr_ctrl) {
     log_line("player override: chr_ctrl missing");
     return;
   }
 
+  uintptr_t owner = 0;
+  if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) && owner &&
+      owner != player_chr) {
+    log_line("player override: chr_ctrl owner mismatch (owner=0x%llx chr=0x%llx)",
+             static_cast<unsigned long long>(owner),
+             static_cast<unsigned long long>(player_chr));
+    return;
+  }
   uintptr_t modifier = 0;
   safe_read_ptr(chr_ctrl + kChrCtrlModifierOffset, modifier);
   if (modifier) {
@@ -801,6 +846,16 @@ void debug_team_scan(uintptr_t world_root, uintptr_t actor_mgr,
 
 void apply_team_override_config(uintptr_t player_root, uintptr_t target) {
   if (!g_team.enabled) {
+    return;
+  }
+  if (!is_valid_chr_ins(player_root)) {
+    log_line("team override: invalid player chr 0x%llx",
+             static_cast<unsigned long long>(player_root));
+    return;
+  }
+  if (!is_valid_chr_ins(target)) {
+    log_line("team override: invalid target chr 0x%llx",
+             static_cast<unsigned long long>(target));
     return;
   }
   uint32_t player_val = 0;
