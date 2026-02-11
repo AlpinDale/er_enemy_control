@@ -330,26 +330,39 @@ bool safe_write(uintptr_t addr, const void *data, size_t size) {
 #endif
 }
 
-uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl) {
+uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl,
+                             uintptr_t target) {
   if (is_valid_chr_ins(player_root)) {
     return player_root;
   }
-  if (player_root) {
-    uintptr_t chr_ctrl = 0;
-    if (safe_read_ptr(player_root + kChrInsChrCtrlOffset, chr_ctrl) &&
-        chr_ctrl) {
-      uintptr_t owner = 0;
-      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) &&
-          is_valid_chr_ins(owner)) {
-        return owner;
-      }
-    }
-  }
+
   if (actor_ctrl) {
     uintptr_t owner = 0;
     if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner) &&
         is_valid_chr_ins(owner)) {
       return owner;
+    }
+  }
+
+  if (player_root) {
+    uintptr_t link_a = 0;
+    if (safe_read_ptr(player_root + kLinkAOffset, link_a) &&
+        is_valid_chr_ins(link_a) && link_a != target) {
+      return link_a;
+    }
+    uintptr_t link_b = 0;
+    if (safe_read_ptr(player_root + kLinkBOffset, link_b) &&
+        is_valid_chr_ins(link_b) && link_b != target) {
+      return link_b;
+    }
+    uintptr_t chr_ctrl = 0;
+    if (safe_read_ptr(player_root + kChrInsChrCtrlOffset, chr_ctrl) &&
+        chr_ctrl) {
+      uintptr_t owner = 0;
+      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) &&
+          is_valid_chr_ins(owner) && owner != target) {
+        return owner;
+      }
     }
   }
   return 0;
@@ -927,14 +940,19 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   }
 
   auto player_root = read_ptr(player_ptr_addr);
-  auto player_chr = resolve_player_chr(player_root, actor_ctrl);
+  auto player_chr = resolve_player_chr(player_root, actor_ctrl, target);
   if (player_root) {
-    if (player_chr && player_chr != player_root) {
-      log_line("player chr resolved: root=0x%llx chr=0x%llx",
-               static_cast<unsigned long long>(player_root),
-               static_cast<unsigned long long>(player_chr));
+    if (player_chr) {
+      if (player_chr != player_root) {
+        log_line("player chr resolved: root=0x%llx chr=0x%llx",
+                 static_cast<unsigned long long>(player_root),
+                 static_cast<unsigned long long>(player_chr));
+      }
+      log_team_values("before override", player_chr, target);
+    } else {
+      log_line("player chr unresolved (root=0x%llx)",
+               static_cast<unsigned long long>(player_root));
     }
-    log_team_values("before override", player_chr ? player_chr : player_root, target);
     link_target(player_root, target);
   }
 
@@ -954,7 +972,7 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
 void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   auto player_root = read_ptr(player_ptr_addr);
-  auto player_chr = resolve_player_chr(player_root, actor_ctrl);
+  auto player_chr = resolve_player_chr(player_root, actor_ctrl, 0);
   uintptr_t target = 0;
   if (player_root) {
     target = read_ptr(player_root + kLinkBOffset);
