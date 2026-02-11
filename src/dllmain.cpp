@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <windows.h>
+#include <winuser.h>
 
 #include "pattern_scan.h"
 
@@ -56,6 +57,7 @@ constexpr uint32_t kActionDisableAbilityLockOnBit = 1u << 3;
 constexpr uint32_t kCtrlDisableHitBit = 1u << 1;
 
 constexpr uint32_t kFieldInsHandleOffset = 0x8;
+constexpr uint32_t kWorldChrManMainPlayerOffset = 0x1E508;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -347,8 +349,8 @@ bool safe_write(uintptr_t addr, const void *data, size_t size) {
 #endif
 }
 
-uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl,
-                             uintptr_t target) {
+uintptr_t resolve_player_chr(uintptr_t world_root, uintptr_t player_root,
+                             uintptr_t actor_ctrl, uintptr_t target) {
   uintptr_t best = 0;
   int best_quality = 0;
 
@@ -364,6 +366,13 @@ uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl,
   };
 
   consider(player_root);
+
+  if (world_root) {
+    uintptr_t main_player = 0;
+    if (safe_read_ptr(world_root + kWorldChrManMainPlayerOffset, main_player)) {
+      consider(main_player);
+    }
+  }
 
   if (actor_ctrl) {
     uintptr_t owner = 0;
@@ -881,6 +890,18 @@ void debug_team_scan(uintptr_t world_root, uintptr_t actor_mgr,
     return;
   }
 
+  if (world_root) {
+    uintptr_t main_player = 0;
+    if (safe_read_ptr(world_root + kWorldChrManMainPlayerOffset, main_player)) {
+      uint8_t team = 0;
+      int quality = chr_ins_quality(main_player, &team);
+      log_line("team scan: world_root main_player=0x%llx team=%u quality=%d",
+               static_cast<unsigned long long>(main_player), team, quality);
+    } else {
+      log_line("team scan: world_root main_player read failed");
+    }
+  }
+
   uintptr_t target = read_ptr(player_root + kLinkBOffset);
   if (!target) {
     target = get_current_target(world_root, actor_mgr);
@@ -975,7 +996,8 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   }
 
   auto player_root = read_ptr(player_ptr_addr);
-  auto player_chr = resolve_player_chr(player_root, actor_ctrl, target);
+  auto player_chr =
+      resolve_player_chr(world_root, player_root, actor_ctrl, target);
   if (player_root) {
     if (player_chr) {
       if (player_chr != player_root) {
@@ -1004,10 +1026,10 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   g_control_active.store(true);
 }
 
-void handle_f2(uintptr_t actor_mgr, uintptr_t actor_ctrl,
+void handle_f2(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
   auto player_root = read_ptr(player_ptr_addr);
-  auto player_chr = resolve_player_chr(player_root, actor_ctrl, 0);
+  auto player_chr = resolve_player_chr(world_root, player_root, actor_ctrl, 0);
   uintptr_t target = 0;
   if (player_root) {
     target = read_ptr(player_root + kLinkBOffset);
@@ -1052,7 +1074,7 @@ void tick() {
   if (GetAsyncKeyState(VK_F1) & 1) {
     handle_f1(world_root, actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F2) & 1) {
-    handle_f2(actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
+    handle_f2(world_root, actor_mgr, actor_ctrl, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F3) & 1) {
     debug_team_scan(world_root, actor_mgr, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F4) & 1) {
