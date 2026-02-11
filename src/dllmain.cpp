@@ -60,6 +60,12 @@ constexpr uint32_t kFieldInsHandleOffset = 0x8;
 constexpr uint32_t kWorldChrManMainPlayerOffset = 0x1E508;
 constexpr uint32_t kChrInsFlags1c5Offset = 0x1C5;
 constexpr uint32_t kChrInsDeathFlagBit = 1u << 7;
+constexpr uint32_t kChrInsModuleContainerOffset = 0x190;
+constexpr uint32_t kModuleContainerDataOffset = 0x0;
+constexpr uint32_t kChrDataHpOffset = 0x138;
+constexpr uint32_t kChrDataMaxHpOffset = 0x13C;
+constexpr uint32_t kChrDataMaxUncappedHpOffset = 0x140;
+constexpr uint32_t kChrDataBaseHpOffset = 0x144;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -113,6 +119,19 @@ struct PlayerControlOverride {
 
 PlayerControlOverride g_player_override;
 
+struct HpSyncState {
+  bool enabled = true;
+  bool active = false;
+  uintptr_t player_data = 0;
+  uintptr_t target_data = 0;
+  int32_t player_hp = 0;
+  int32_t player_max_hp = 0;
+  int32_t player_max_uncapped = 0;
+  int32_t player_base_hp = 0;
+};
+
+HpSyncState g_hp_sync;
+
 uintptr_t g_active_target = 0;
 uintptr_t g_active_player_chr = 0;
 uintptr_t g_active_player_root = 0;
@@ -121,6 +140,9 @@ void align_player_to_target(uintptr_t actor_ctrl, uintptr_t player_ptr_addr);
 void unlink_target(uintptr_t player_root);
 void restore_team_override_config(uintptr_t target);
 void set_control_flags(uintptr_t actor_mgr, uintptr_t actor_ctrl, bool enabled);
+void start_hp_sync(uintptr_t player_chr, uintptr_t target);
+void update_hp_sync();
+void stop_hp_sync(const char *reason);
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -205,11 +227,14 @@ void load_config() {
   g_team.player_has_original = false;
   g_team.target_ptr = 0;
   g_team.player_ptr = 0;
+  g_hp_sync.enabled = true;
 
   bool saw_enabled = false;
+  bool saw_hp_sync = false;
   FILE *f = std::fopen("erd_enemy_control.ini", "r");
   if (!f) {
     log_line("team override enabled (default)");
+    log_line("hp sync enabled (default)");
     return;
   }
   g_team.use_config = true;
@@ -243,6 +268,10 @@ void load_config() {
                 key == "team_player_neutral_value") &&
                parse_u32(val, parsed)) {
       g_team.player_neutral_value = parsed;
+    } else if ((key == "hp_sync" || key == "sync_player_hp") &&
+               parse_u32(val, parsed)) {
+      g_hp_sync.enabled = (parsed != 0);
+      saw_hp_sync = true;
     }
   }
   std::fclose(f);
@@ -256,6 +285,15 @@ void load_config() {
     log_line("team override disabled by config");
   } else {
     log_line("team override disabled (config present)");
+  }
+
+  if (g_hp_sync.enabled) {
+    log_line("hp sync %s", saw_hp_sync ? "enabled (config)" : "enabled");
+  } else {
+    log_line("hp sync disabled (config)");
+    if (g_hp_sync.active) {
+      stop_hp_sync("config disabled");
+    }
   }
 }
 
@@ -470,6 +508,40 @@ uintptr_t resolve_chr_ctrl(uintptr_t chr_ins, uintptr_t fallback_ctrl) {
   return fallback_ctrl;
 }
 
+uintptr_t get_chr_data_module(uintptr_t chr_ins) {
+  if (!chr_ins) {
+    return 0;
+  }
+  uintptr_t container = 0;
+  if (!safe_read_ptr(chr_ins + kChrInsModuleContainerOffset, container) ||
+      !container) {
+    return 0;
+  }
+  uintptr_t data = 0;
+  if (!safe_read_ptr(container + kModuleContainerDataOffset, data) || !data) {
+    return 0;
+  }
+  return data;
+}
+
+bool read_chr_hp(uintptr_t data, int32_t &hp, int32_t &max_hp,
+                 int32_t &max_uncapped, int32_t &base_hp) {
+  return safe_read(data + kChrDataHpOffset, &hp, sizeof(hp)) &&
+         safe_read(data + kChrDataMaxHpOffset, &max_hp, sizeof(max_hp)) &&
+         safe_read(data + kChrDataMaxUncappedHpOffset, &max_uncapped,
+                   sizeof(max_uncapped)) &&
+         safe_read(data + kChrDataBaseHpOffset, &base_hp, sizeof(base_hp));
+}
+
+bool write_chr_hp(uintptr_t data, int32_t hp, int32_t max_hp,
+                  int32_t max_uncapped, int32_t base_hp) {
+  return safe_write(data + kChrDataHpOffset, &hp, sizeof(hp)) &&
+         safe_write(data + kChrDataMaxHpOffset, &max_hp, sizeof(max_hp)) &&
+         safe_write(data + kChrDataMaxUncappedHpOffset, &max_uncapped,
+                    sizeof(max_uncapped)) &&
+         safe_write(data + kChrDataBaseHpOffset, &base_hp, sizeof(base_hp));
+}
+
 void apply_player_control_override(uintptr_t player_chr,
                                    uintptr_t fallback_ctrl) {
   g_player_override.active = false;
@@ -528,6 +600,97 @@ void apply_player_control_override(uintptr_t player_chr,
   }
 
   g_player_override.active = true;
+}
+
+void start_hp_sync(uintptr_t player_chr, uintptr_t target) {
+  if (!g_hp_sync.enabled) {
+    return;
+  }
+  stop_hp_sync("restart");
+  if (!is_valid_chr_ins(player_chr) || !is_valid_chr_ins(target)) {
+    log_line("hp sync: invalid chr (player=0x%llx target=0x%llx)",
+             static_cast<unsigned long long>(player_chr),
+             static_cast<unsigned long long>(target));
+    return;
+  }
+  uintptr_t player_data = get_chr_data_module(player_chr);
+  uintptr_t target_data = get_chr_data_module(target);
+  if (!player_data || !target_data) {
+    log_line("hp sync: data module missing (player=0x%llx target=0x%llx)",
+             static_cast<unsigned long long>(player_data),
+             static_cast<unsigned long long>(target_data));
+    return;
+  }
+
+  int32_t hp = 0;
+  int32_t max_hp = 0;
+  int32_t max_uncapped = 0;
+  int32_t base_hp = 0;
+  if (!read_chr_hp(player_data, hp, max_hp, max_uncapped, base_hp)) {
+    log_line("hp sync: failed to read player hp");
+    return;
+  }
+
+  g_hp_sync.player_data = player_data;
+  g_hp_sync.target_data = target_data;
+  g_hp_sync.player_hp = hp;
+  g_hp_sync.player_max_hp = max_hp;
+  g_hp_sync.player_max_uncapped = max_uncapped;
+  g_hp_sync.player_base_hp = base_hp;
+  g_hp_sync.active = true;
+
+  log_line("hp sync enabled: player_hp=%d max=%d uncapped=%d base=%d", hp,
+           max_hp, max_uncapped, base_hp);
+}
+
+void update_hp_sync() {
+  if (!g_hp_sync.enabled || !g_hp_sync.active) {
+    return;
+  }
+  if (!g_hp_sync.player_data || !g_hp_sync.target_data) {
+    return;
+  }
+
+  int32_t hp = 0;
+  int32_t max_hp = 0;
+  int32_t max_uncapped = 0;
+  int32_t base_hp = 0;
+  if (!read_chr_hp(g_hp_sync.target_data, hp, max_hp, max_uncapped, base_hp)) {
+    return;
+  }
+
+  if (max_hp < 1) {
+    max_hp = 1;
+  }
+  if (max_uncapped < 1) {
+    max_uncapped = max_hp;
+  }
+  if (base_hp < 1) {
+    base_hp = max_hp;
+  }
+  if (hp < 1) {
+    hp = 1;
+  }
+  write_chr_hp(g_hp_sync.player_data, hp, max_hp, max_uncapped, base_hp);
+}
+
+void stop_hp_sync(const char *reason) {
+  if (!g_hp_sync.active) {
+    return;
+  }
+  if (g_hp_sync.player_data) {
+    write_chr_hp(g_hp_sync.player_data, g_hp_sync.player_hp,
+                 g_hp_sync.player_max_hp, g_hp_sync.player_max_uncapped,
+                 g_hp_sync.player_base_hp);
+  }
+  g_hp_sync.active = false;
+  g_hp_sync.player_data = 0;
+  g_hp_sync.target_data = 0;
+  if (reason) {
+    log_line("hp sync restored (%s)", reason);
+  } else {
+    log_line("hp sync restored");
+  }
 }
 
 void restore_player_control_override(uintptr_t player_chr,
@@ -593,6 +756,8 @@ void release_control(uintptr_t world_root, uintptr_t actor_mgr,
   } else {
     g_player_override.active = false;
   }
+
+  stop_hp_sync(reason);
 
   set_control_flags(actor_mgr, actor_ctrl, false);
   g_control_active.store(false);
@@ -1117,6 +1282,9 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   if (player_chr) {
     apply_player_control_override(player_chr, actor_ctrl);
   }
+  if (player_chr) {
+    start_hp_sync(player_chr, target);
+  }
 
   set_control_flags(actor_mgr, actor_ctrl, true);
   g_control_active.store(true);
@@ -1186,6 +1354,7 @@ void tick() {
   }
 
   if (g_control_active.load()) {
+    update_hp_sync();
     set_control_flags(actor_mgr, actor_ctrl, true);
   }
 

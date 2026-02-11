@@ -19,3 +19,16 @@ The output DLL will be `build/dist/EnemyControl/elden_ring_enemy_control.dll`.
 The launcher will be `build/dist/erd_launcher.exe`.
 The launcher writes `erd_launcher.log` in its working directory.
 The mod writes `erd_enemy_control.log` in the launcher directory.
+
+## Optional config (`erd_enemy_control.ini`)
+```
+# Team override (defaults shown)
+team_enabled=1
+team_offset=0x6c
+team_size=1
+team_player_neutralize=1
+team_player_neutral_value=0
+
+# Sync player HP to controlled NPC (1=on, 0=off)
+hp_sync=1
+```
