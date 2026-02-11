@@ -288,29 +288,45 @@ bool safe_read_ptr(uintptr_t addr, uintptr_t &out) {
   return safe_read(addr, &out, sizeof(out));
 }
 
-bool is_valid_chr_ins(uintptr_t ptr, uint8_t *team_out = nullptr) {
+int chr_ins_quality(uintptr_t ptr, uint8_t *team_out = nullptr) {
   if (!ptr) {
-    return false;
+    return 0;
   }
   uint8_t team = 0;
   if (!safe_read(ptr + g_team.offset, &team, sizeof(team))) {
-    return false;
+    return 0;
   }
   if (team > 77) {
-    return false;
+    return 0;
   }
   uint32_t selector = 0;
-  if (!safe_read(ptr + kFieldInsHandleOffset, &selector, sizeof(selector))) {
-    return false;
+  bool field_ok = false;
+  if (safe_read(ptr + kFieldInsHandleOffset, &selector, sizeof(selector))) {
+    uint32_t field_type = (selector >> 28) & 0xF;
+    field_ok = (field_type == 1);
   }
-  uint32_t field_type = (selector >> 28) & 0xF;
-  if (field_type != 1) {
-    return false;
+  bool ctrl_ok = false;
+  uintptr_t chr_ctrl = 0;
+  if (safe_read_ptr(ptr + kChrInsChrCtrlOffset, chr_ctrl) && chr_ctrl) {
+    uintptr_t owner = 0;
+    if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) && owner == ptr) {
+      ctrl_ok = true;
+    }
   }
   if (team_out) {
     *team_out = team;
   }
-  return true;
+  if (field_ok) {
+    return 2;
+  }
+  if (ctrl_ok) {
+    return 1;
+  }
+  return 0;
+}
+
+bool is_valid_chr_ins(uintptr_t ptr, uint8_t *team_out = nullptr) {
+  return chr_ins_quality(ptr, team_out) > 0;
 }
 
 bool safe_write(uintptr_t addr, const void *data, size_t size) {
@@ -332,38 +348,58 @@ bool safe_write(uintptr_t addr, const void *data, size_t size) {
 
 uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl,
                              uintptr_t target) {
-  if (is_valid_chr_ins(player_root)) {
-    return player_root;
-  }
+  uintptr_t best = 0;
+  int best_quality = 0;
+
+  auto consider = [&](uintptr_t ptr) {
+    if (!ptr || ptr == target) {
+      return;
+    }
+    int q = chr_ins_quality(ptr);
+    if (q > best_quality) {
+      best_quality = q;
+      best = ptr;
+    }
+  };
+
+  consider(player_root);
 
   if (actor_ctrl) {
     uintptr_t owner = 0;
-    if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner) &&
-        is_valid_chr_ins(owner)) {
-      return owner;
+    if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner)) {
+      consider(owner);
     }
   }
 
   if (player_root) {
     uintptr_t link_a = 0;
-    if (safe_read_ptr(player_root + kLinkAOffset, link_a) &&
-        is_valid_chr_ins(link_a) && link_a != target) {
-      return link_a;
+    if (safe_read_ptr(player_root + kLinkAOffset, link_a)) {
+      consider(link_a);
     }
     uintptr_t link_b = 0;
-    if (safe_read_ptr(player_root + kLinkBOffset, link_b) &&
-        is_valid_chr_ins(link_b) && link_b != target) {
-      return link_b;
+    if (safe_read_ptr(player_root + kLinkBOffset, link_b)) {
+      consider(link_b);
     }
     uintptr_t chr_ctrl = 0;
     if (safe_read_ptr(player_root + kChrInsChrCtrlOffset, chr_ctrl) &&
         chr_ctrl) {
       uintptr_t owner = 0;
-      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) &&
-          is_valid_chr_ins(owner) && owner != target) {
-        return owner;
+      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner)) {
+        consider(owner);
       }
     }
+
+    for (uint32_t off = 0; off <= 0x200; off += 8) {
+      uintptr_t ptr = 0;
+      if (!safe_read_ptr(player_root + off, ptr)) {
+        continue;
+      }
+      consider(ptr);
+    }
+  }
+
+  if (best_quality > 0) {
+    return best;
   }
   return 0;
 }
@@ -824,13 +860,11 @@ void scan_team_ptr_candidates(uintptr_t base, const char *label) {
     if (!ptr) {
       continue;
     }
-    uint32_t val = 0;
-    if (!safe_read(ptr + g_team.offset, &val, g_team.size)) {
-      continue;
-    }
-    if (val <= 77) {
-      log_line("  +0x%03x -> 0x%llx team=%u", off,
-               static_cast<unsigned long long>(ptr), val);
+    uint8_t val = 0;
+    int quality = chr_ins_quality(ptr, &val);
+    if (quality > 0) {
+      log_line("  +0x%03x -> 0x%llx team=%u quality=%d", off,
+               static_cast<unsigned long long>(ptr), val, quality);
     }
   }
   log_line("=== end team ptr scan (%s) ===", label);
