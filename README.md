@@ -31,4 +31,10 @@ team_player_neutral_value=0
 
 # Sync player HP to controlled NPC (1=on, 0=off)
 hp_sync=1
+
+# Camera zoom scaling for large NPCs
+camera_enabled=1
+camera_scale_min=1.25
+camera_scale_factor=0.5
+camera_scale_max=1.8
 ```

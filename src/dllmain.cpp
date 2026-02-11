@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
@@ -51,6 +52,7 @@ constexpr uint32_t kChrCtrlOwnerOffset = 0x10;
 constexpr uint32_t kChrCtrlModifierOffset = 0xC8;
 constexpr uint32_t kChrCtrlModifierActionFlagsOffset = 0x18;
 constexpr uint32_t kChrCtrlFlagsOffset = 0xF0;
+constexpr uint32_t kChrCtrlTagOffset = 0x1A0;
 
 constexpr uint32_t kActionDisableLockOnBit = 1u << 2;
 constexpr uint32_t kActionDisableAbilityLockOnBit = 1u << 3;
@@ -61,11 +63,19 @@ constexpr uint32_t kWorldChrManMainPlayerOffset = 0x1E508;
 constexpr uint32_t kChrInsFlags1c5Offset = 0x1C5;
 constexpr uint32_t kChrInsDeathFlagBit = 1u << 7;
 constexpr uint32_t kChrInsModuleContainerOffset = 0x190;
+constexpr uint32_t kWorldChrManChrCamOffset = 0x1ECE0;
 constexpr uint32_t kModuleContainerDataOffset = 0x0;
 constexpr uint32_t kChrDataHpOffset = 0x138;
 constexpr uint32_t kChrDataMaxHpOffset = 0x13C;
 constexpr uint32_t kChrDataMaxUncappedHpOffset = 0x140;
 constexpr uint32_t kChrDataBaseHpOffset = 0x144;
+constexpr uint32_t kCSCamFovOffset = 0x50;
+constexpr uint32_t kChrCtrlScaleXOffset = 0x2D4;
+constexpr uint32_t kChrCtrlScaleYOffset = 0x2D8;
+constexpr uint32_t kChrCtrlScaleZOffset = 0x2DC;
+constexpr float kCameraScaleMin = 1.25f;
+constexpr float kCameraScaleFactor = 0.5f;
+constexpr float kCameraMaxMultiplier = 1.8f;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -132,6 +142,20 @@ struct HpSyncState {
 
 HpSyncState g_hp_sync;
 
+struct CameraOverrideState {
+  bool enabled = true;
+  bool active = false;
+  float base_fov = 0.0f;
+  float last_fov = 0.0f;
+  float base_tag_y = 1.0f;
+  float min_scale = kCameraScaleMin;
+  float scale_factor = kCameraScaleFactor;
+  float max_multiplier = kCameraMaxMultiplier;
+  uintptr_t chr_cam = 0;
+};
+
+CameraOverrideState g_camera;
+
 uintptr_t g_active_target = 0;
 uintptr_t g_active_player_chr = 0;
 uintptr_t g_active_player_root = 0;
@@ -143,6 +167,10 @@ void set_control_flags(uintptr_t actor_mgr, uintptr_t actor_ctrl, bool enabled);
 void start_hp_sync(uintptr_t player_chr, uintptr_t target);
 void update_hp_sync();
 void stop_hp_sync(const char *reason);
+void start_camera_override(uintptr_t world_root, uintptr_t player_chr,
+                           uintptr_t target);
+void update_camera_override(uintptr_t target);
+void stop_camera_override(const char *reason);
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -216,6 +244,19 @@ bool parse_u32(const std::string &s, uint32_t &out) {
   return true;
 }
 
+bool parse_f32(const std::string &s, float &out) {
+  if (s.empty()) {
+    return false;
+  }
+  char *end = nullptr;
+  float v = std::strtof(s.c_str(), &end);
+  if (!end || end == s.c_str()) {
+    return false;
+  }
+  out = v;
+  return true;
+}
+
 void load_config() {
   g_team.enabled = true;
   g_team.use_config = false;
@@ -228,13 +269,24 @@ void load_config() {
   g_team.target_ptr = 0;
   g_team.player_ptr = 0;
   g_hp_sync.enabled = true;
+  g_camera.enabled = true;
+  g_camera.base_tag_y = 1.0f;
+  g_camera.min_scale = kCameraScaleMin;
+  g_camera.scale_factor = kCameraScaleFactor;
+  g_camera.max_multiplier = kCameraMaxMultiplier;
 
   bool saw_enabled = false;
   bool saw_hp_sync = false;
+  bool saw_camera_enabled = false;
+  bool saw_camera_settings = false;
   FILE *f = std::fopen("erd_enemy_control.ini", "r");
   if (!f) {
     log_line("team override enabled (default)");
     log_line("hp sync enabled (default)");
+    log_line("camera zoom enabled (default) min_scale=%.2f factor=%.2f "
+             "max_mult=%.2f",
+             g_camera.min_scale, g_camera.scale_factor,
+             g_camera.max_multiplier);
     return;
   }
   g_team.use_config = true;
@@ -272,6 +324,18 @@ void load_config() {
                parse_u32(val, parsed)) {
       g_hp_sync.enabled = (parsed != 0);
       saw_hp_sync = true;
+    } else if (key == "camera_enabled" && parse_u32(val, parsed)) {
+      g_camera.enabled = (parsed != 0);
+      saw_camera_enabled = true;
+    } else if (key == "camera_scale_min" &&
+               parse_f32(val, g_camera.min_scale)) {
+      saw_camera_settings = true;
+    } else if (key == "camera_scale_factor" &&
+               parse_f32(val, g_camera.scale_factor)) {
+      saw_camera_settings = true;
+    } else if (key == "camera_scale_max" &&
+               parse_f32(val, g_camera.max_multiplier)) {
+      saw_camera_settings = true;
     }
   }
   std::fclose(f);
@@ -293,6 +357,19 @@ void load_config() {
     log_line("hp sync disabled (config)");
     if (g_hp_sync.active) {
       stop_hp_sync("config disabled");
+    }
+  }
+
+  if (g_camera.enabled) {
+    log_line("camera zoom %s min_scale=%.2f factor=%.2f max_mult=%.2f",
+             (saw_camera_enabled || saw_camera_settings) ? "enabled (config)"
+                                                         : "enabled",
+             g_camera.min_scale, g_camera.scale_factor,
+             g_camera.max_multiplier);
+  } else {
+    log_line("camera zoom disabled (config)");
+    if (g_camera.active) {
+      stop_camera_override("config disabled");
     }
   }
 }
@@ -508,6 +585,17 @@ uintptr_t resolve_chr_ctrl(uintptr_t chr_ins, uintptr_t fallback_ctrl) {
   return fallback_ctrl;
 }
 
+uintptr_t resolve_chr_cam(uintptr_t world_root) {
+  if (!world_root) {
+    return 0;
+  }
+  uintptr_t chr_cam = 0;
+  if (!safe_read_ptr(world_root + kWorldChrManChrCamOffset, chr_cam)) {
+    return 0;
+  }
+  return chr_cam;
+}
+
 uintptr_t get_chr_data_module(uintptr_t chr_ins) {
   if (!chr_ins) {
     return 0;
@@ -693,6 +781,109 @@ void stop_hp_sync(const char *reason) {
   }
 }
 
+float read_chr_scale(uintptr_t chr_ins) {
+  auto chr_ctrl = resolve_chr_ctrl(chr_ins, 0);
+  if (!chr_ctrl) {
+    return 1.0f;
+  }
+  float sx = 1.0f;
+  float sy = 1.0f;
+  float sz = 1.0f;
+  if (!safe_read(chr_ctrl + kChrCtrlScaleXOffset, &sx, sizeof(sx)) ||
+      !safe_read(chr_ctrl + kChrCtrlScaleYOffset, &sy, sizeof(sy)) ||
+      !safe_read(chr_ctrl + kChrCtrlScaleZOffset, &sz, sizeof(sz))) {
+    return 1.0f;
+  }
+  return std::max(sx, std::max(sy, sz));
+}
+
+float read_chr_tag_y(uintptr_t chr_ins) {
+  auto chr_ctrl = resolve_chr_ctrl(chr_ins, 0);
+  if (!chr_ctrl) {
+    return 0.0f;
+  }
+  float y = 0.0f;
+  if (!safe_read(chr_ctrl + kChrCtrlTagOffset + sizeof(float), &y, sizeof(y))) {
+    return 0.0f;
+  }
+  return y;
+}
+
+void start_camera_override(uintptr_t world_root, uintptr_t player_chr,
+                           uintptr_t target) {
+  if (!g_camera.enabled) {
+    return;
+  }
+  stop_camera_override("restart");
+  auto chr_cam = resolve_chr_cam(world_root);
+  if (!chr_cam) {
+    log_line("camera zoom: chr_cam missing");
+    return;
+  }
+  float fov = 0.0f;
+  if (!safe_read(chr_cam + kCSCamFovOffset, &fov, sizeof(fov)) || fov <= 0.0f) {
+    log_line("camera zoom: failed to read fov");
+    return;
+  }
+  g_camera.chr_cam = chr_cam;
+  g_camera.base_fov = fov;
+  g_camera.last_fov = fov;
+  float base_tag_y = read_chr_tag_y(player_chr);
+  if (base_tag_y > 0.01f) {
+    g_camera.base_tag_y = base_tag_y;
+  } else {
+    g_camera.base_tag_y = 1.0f;
+  }
+  g_camera.active = true;
+  update_camera_override(target);
+}
+
+void update_camera_override(uintptr_t target) {
+  if (!g_camera.enabled || !g_camera.active || !g_camera.chr_cam) {
+    return;
+  }
+  float scale = read_chr_scale(target);
+  float tag_y = read_chr_tag_y(target);
+  if (g_camera.base_tag_y > 0.01f && tag_y > 0.01f) {
+    float tag_scale = tag_y / g_camera.base_tag_y;
+    if (tag_scale > scale) {
+      scale = tag_scale;
+    }
+  }
+  float mult = 1.0f;
+  if (scale > g_camera.min_scale) {
+    mult = 1.0f + (scale - 1.0f) * g_camera.scale_factor;
+    if (mult > g_camera.max_multiplier) {
+      mult = g_camera.max_multiplier;
+    }
+  }
+  float new_fov = g_camera.base_fov * mult;
+  if (new_fov != g_camera.last_fov) {
+    if (safe_write(g_camera.chr_cam + kCSCamFovOffset, &new_fov,
+                   sizeof(new_fov))) {
+      g_camera.last_fov = new_fov;
+    }
+  }
+}
+
+void stop_camera_override(const char *reason) {
+  if (!g_camera.active) {
+    return;
+  }
+  if (g_camera.chr_cam && g_camera.base_fov > 0.0f) {
+    safe_write(g_camera.chr_cam + kCSCamFovOffset, &g_camera.base_fov,
+               sizeof(g_camera.base_fov));
+  }
+  g_camera.active = false;
+  g_camera.chr_cam = 0;
+  g_camera.base_tag_y = 1.0f;
+  if (reason) {
+    log_line("camera zoom restored (%s)", reason);
+  } else {
+    log_line("camera zoom restored");
+  }
+}
+
 void restore_player_control_override(uintptr_t player_chr,
                                      uintptr_t fallback_ctrl) {
   if (!g_player_override.active) {
@@ -758,6 +949,7 @@ void release_control(uintptr_t world_root, uintptr_t actor_mgr,
   }
 
   stop_hp_sync(reason);
+  stop_camera_override(reason);
 
   set_control_flags(actor_mgr, actor_ctrl, false);
   g_control_active.store(false);
@@ -1285,6 +1477,7 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
   if (player_chr) {
     start_hp_sync(player_chr, target);
   }
+  start_camera_override(world_root, player_chr, target);
 
   set_control_flags(actor_mgr, actor_ctrl, true);
   g_control_active.store(true);
@@ -1354,6 +1547,15 @@ void tick() {
   }
 
   if (g_control_active.load()) {
+    uintptr_t target = 0;
+    auto player_root = read_ptr(g_addrs.player_ptr_addr);
+    if (player_root) {
+      target = read_ptr(player_root + kLinkBOffset);
+    }
+    if (!target) {
+      target = g_active_target;
+    }
+    update_camera_override(target);
     update_hp_sync();
     set_control_flags(actor_mgr, actor_ctrl, true);
   }
