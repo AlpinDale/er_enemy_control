@@ -55,3 +55,9 @@ player_neutral_value=0
 
 Set `team_enabled=0` to disable the override. Press F4 to reload the config while
 the game is running.
+
+## Control safeguards
+While controlling an NPC, the mod also:
+- marks the player as not lock-on target (prevents locking onto the invisible player)
+- clears the "can't lock-on" flag so you can still lock onto enemies
+- disables hits on the player so attacks don't get eaten by the invisible body
