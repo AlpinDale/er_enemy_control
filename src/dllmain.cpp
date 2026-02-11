@@ -163,6 +163,7 @@ void update_hp_sync();
 void stop_hp_sync(const char *reason);
 void adjust_camera_zoom(uintptr_t world_root, float delta);
 void reset_camera_zoom(uintptr_t world_root);
+void apply_camera_zoom(uintptr_t world_root);
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -779,6 +780,25 @@ void reset_camera_zoom(uintptr_t world_root) {
     g_camera.current_fov = base;
     log_line("camera zoom: reset fov %.2f", base);
   }
+}
+
+void apply_camera_zoom(uintptr_t world_root) {
+  if (!g_camera.active) {
+    return;
+  }
+  uintptr_t cam = 0;
+  float fov = 0.0f;
+  if (!read_camera_fov(world_root, cam, fov)) {
+    return;
+  }
+  if (g_camera.chr_cam != cam) {
+    g_camera.chr_cam = cam;
+    if (g_camera.current_fov <= 0.0f) {
+      g_camera.current_fov = fov;
+    }
+  }
+  float target_fov = g_camera.current_fov > 0.0f ? g_camera.current_fov : fov;
+  safe_write(cam + kCSCamFovOffset, &target_fov, sizeof(target_fov));
 }
 
 void restore_player_control_override(uintptr_t player_chr,
@@ -1422,6 +1442,8 @@ void tick() {
   } else if (GetAsyncKeyState(VK_F7) & 1) {
     reset_camera_zoom(world_root);
   }
+
+  apply_camera_zoom(world_root);
 
   if (g_control_active.load()) {
     auto player_root = read_ptr(g_addrs.player_ptr_addr);
