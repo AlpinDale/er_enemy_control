@@ -58,6 +58,8 @@ constexpr uint32_t kCtrlDisableHitBit = 1u << 1;
 
 constexpr uint32_t kFieldInsHandleOffset = 0x8;
 constexpr uint32_t kWorldChrManMainPlayerOffset = 0x1E508;
+constexpr uint32_t kChrInsFlags1c5Offset = 0x1C5;
+constexpr uint32_t kChrInsDeathFlagBit = 1u << 7;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -107,6 +109,10 @@ struct PlayerControlOverride {
 };
 
 PlayerControlOverride g_player_override;
+
+uintptr_t g_active_target = 0;
+uintptr_t g_active_player_chr = 0;
+uintptr_t g_active_player_root = 0;
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -546,6 +552,46 @@ void restore_player_control_override(uintptr_t player_chr,
   }
 
   g_player_override.active = false;
+}
+
+void release_control(uintptr_t world_root, uintptr_t actor_mgr,
+                     uintptr_t actor_ctrl, uintptr_t player_ptr_addr,
+                     const char *reason) {
+  auto player_root = read_ptr(player_ptr_addr);
+  if (!player_root) {
+    player_root = g_active_player_root;
+  }
+  uintptr_t target = g_active_target;
+  if (player_root) {
+    align_player_to_target(actor_ctrl, player_ptr_addr);
+    unlink_target(player_root);
+  }
+
+  if (g_team.enabled && target && is_valid_chr_ins(target)) {
+    restore_team_override_config(target);
+  } else {
+    g_team.target_has_original = false;
+    g_team.player_has_original = false;
+  }
+
+  auto player_chr = resolve_player_chr(world_root, player_root, actor_ctrl, 0);
+  if (!player_chr) {
+    player_chr = g_active_player_chr;
+  }
+  if (player_chr) {
+    restore_player_control_override(player_chr, actor_ctrl);
+  } else {
+    g_player_override.active = false;
+  }
+
+  set_control_flags(actor_mgr, actor_ctrl, false);
+  g_control_active.store(false);
+  g_active_target = 0;
+  g_active_player_chr = 0;
+  g_active_player_root = 0;
+  if (reason) {
+    log_line("control released (%s)", reason);
+  }
 }
 
 bool capture_snapshot(uintptr_t base, size_t size, std::vector<uint8_t> &out) {
@@ -1054,30 +1100,14 @@ void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
 
   set_control_flags(actor_mgr, actor_ctrl, true);
   g_control_active.store(true);
+  g_active_target = target;
+  g_active_player_chr = player_chr;
+  g_active_player_root = player_root;
 }
 
 void handle_f2(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
-  auto player_root = read_ptr(player_ptr_addr);
-  auto player_chr = resolve_player_chr(world_root, player_root, actor_ctrl, 0);
-  uintptr_t target = 0;
-  if (player_root) {
-    target = read_ptr(player_root + kLinkBOffset);
-  }
-  if (player_root) {
-    align_player_to_target(actor_ctrl, player_ptr_addr);
-    unlink_target(player_root);
-  }
-
-  if (g_team.enabled && target) {
-    restore_team_override_config(target);
-  }
-  if (player_chr) {
-    restore_player_control_override(player_chr, actor_ctrl);
-  }
-
-  set_control_flags(actor_mgr, actor_ctrl, false);
-  g_control_active.store(false);
+  release_control(world_root, actor_mgr, actor_ctrl, player_ptr_addr, "manual");
 }
 
 void tick() {
@@ -1109,6 +1139,30 @@ void tick() {
     debug_team_scan(world_root, actor_mgr, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F4) & 1) {
     load_config();
+  }
+
+  if (g_control_active.load()) {
+    auto player_root = read_ptr(g_addrs.player_ptr_addr);
+    uintptr_t target = 0;
+    if (player_root) {
+      target = read_ptr(player_root + kLinkBOffset);
+    }
+    if (!target) {
+      target = g_active_target;
+    }
+    bool should_release = false;
+    if (!target || !is_valid_chr_ins(target)) {
+      should_release = true;
+    } else {
+      auto flags = read_u8(target + kChrInsFlags1c5Offset);
+      if (flags & kChrInsDeathFlagBit) {
+        should_release = true;
+      }
+    }
+    if (should_release) {
+      release_control(world_root, actor_mgr, actor_ctrl,
+                      g_addrs.player_ptr_addr, "target gone");
+    }
   }
 
   if (g_control_active.load()) {
