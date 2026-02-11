@@ -117,6 +117,11 @@ uintptr_t g_active_target = 0;
 uintptr_t g_active_player_chr = 0;
 uintptr_t g_active_player_root = 0;
 
+void align_player_to_target(uintptr_t actor_ctrl, uintptr_t player_ptr_addr);
+void unlink_target(uintptr_t player_root);
+void restore_team_override_config(uintptr_t target);
+void set_control_flags(uintptr_t actor_mgr, uintptr_t actor_ctrl, bool enabled);
+
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
   OutputDebugStringA(msg);
