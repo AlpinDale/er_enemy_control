@@ -334,6 +334,18 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  {
+    char self_path[MAX_PATH * 4] = {};
+    if (GetModuleFileNameA(nullptr, self_path,
+                           static_cast<DWORD>(sizeof(self_path))) != 0) {
+      std::string launcher_dir = get_dirname(self_path);
+      if (!launcher_dir.empty()) {
+        SetEnvironmentVariableA("ERD_LAUNCHER_DIR", launcher_dir.c_str());
+        log_line("Launcher dir: %s", launcher_dir.c_str());
+      }
+    }
+  }
+
   std::string exe_dir = get_dirname(exe_path);
   STARTUPINFOA si{};
   si.cb = sizeof(si);

@@ -79,7 +79,7 @@ Addresses g_addrs;
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_control_active{false};
 HANDLE g_thread = nullptr;
-const char *kLogPath = "erd_enemy_control.log";
+char g_log_path[MAX_PATH * 4] = "erd_enemy_control.log";
 
 struct TeamOverride {
   bool enabled = false;
@@ -115,7 +115,7 @@ void log_msg(const char *msg) {
 }
 
 void log_line(const char *fmt, ...) {
-  FILE *f = std::fopen(kLogPath, "a");
+  FILE *f = std::fopen(g_log_path, "a");
   if (!f) {
     return;
   }
@@ -126,6 +126,36 @@ void log_line(const char *fmt, ...) {
   va_end(args);
   std::fputc('\n', f);
   std::fclose(f);
+}
+
+void init_log_path(HMODULE module) {
+  char buf[MAX_PATH * 4] = {};
+  DWORD len = GetEnvironmentVariableA("ERD_LAUNCHER_DIR", buf,
+                                      static_cast<DWORD>(sizeof(buf)));
+  if (len > 0 && len < sizeof(buf)) {
+    std::snprintf(g_log_path, sizeof(g_log_path), "%s\\erd_enemy_control.log",
+                  buf);
+    return;
+  }
+
+  if (!module) {
+    return;
+  }
+
+  char mod_path[MAX_PATH * 4] = {};
+  DWORD mod_len = GetModuleFileNameA(module, mod_path,
+                                     static_cast<DWORD>(sizeof(mod_path)));
+  if (mod_len == 0 || mod_len >= sizeof(mod_path)) {
+    return;
+  }
+  std::string path(mod_path);
+  size_t pos = path.find_last_of("\\/");
+  if (pos == std::string::npos) {
+    return;
+  }
+  std::string dir = path.substr(0, pos);
+  std::snprintf(g_log_path, sizeof(g_log_path), "%s\\erd_enemy_control.log",
+                dir.c_str());
 }
 
 std::string trim(const std::string &s) {
@@ -1110,6 +1140,7 @@ DWORD WINAPI mod_thread(LPVOID) {
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(module);
+    init_log_path(module);
     g_thread = CreateThread(nullptr, 0, mod_thread, nullptr, 0, nullptr);
   } else if (reason == DLL_PROCESS_DETACH) {
     g_stop.store(true);

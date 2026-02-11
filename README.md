@@ -18,3 +18,4 @@ cmake --build build --config Release
 The output DLL will be `build/dist/EnemyControl/elden_ring_enemy_control.dll`.
 The launcher will be `build/dist/erd_launcher.exe`.
 The launcher writes `erd_launcher.log` in its working directory.
+The mod writes `erd_enemy_control.log` in the launcher directory.
