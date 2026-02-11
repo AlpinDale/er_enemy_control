@@ -30,6 +30,14 @@ add_executable(erd_launcher
 target_compile_features(erd_launcher PRIVATE cxx_std_20)
 target_compile_definitions(erd_launcher PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
+set(ERD_ICON_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/er_logo.ico")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/launcher.rc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/launcher.rc"
+    @ONLY
+)
+target_sources(erd_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/launcher.rc")
+
 set_target_properties(erd_launcher PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${ERD_DIST_DIR}"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${ERD_DIST_DIR}"
