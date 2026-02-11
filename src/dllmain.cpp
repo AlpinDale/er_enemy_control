@@ -281,6 +281,11 @@ bool safe_read(uintptr_t addr, void *out, size_t size) {
 #endif
 }
 
+bool safe_read_ptr(uintptr_t addr, uintptr_t &out) {
+  out = 0;
+  return safe_read(addr, &out, sizeof(out));
+}
+
 bool safe_write(uintptr_t addr, const void *data, size_t size) {
   if (addr == 0 || data == nullptr || size == 0) {
     return false;
@@ -300,17 +305,18 @@ bool safe_write(uintptr_t addr, const void *data, size_t size) {
 
 uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl) {
   if (player_root) {
-    auto chr_ctrl = read_ptr(player_root + kChrInsChrCtrlOffset);
-    if (chr_ctrl) {
-      auto owner = read_ptr(chr_ctrl + kChrCtrlOwnerOffset);
-      if (owner == player_root || owner != 0) {
-        return owner ? owner : player_root;
+    uintptr_t chr_ctrl = 0;
+    if (safe_read_ptr(player_root + kChrInsChrCtrlOffset, chr_ctrl) &&
+        chr_ctrl) {
+      uintptr_t owner = 0;
+      if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) && owner) {
+        return owner;
       }
     }
   }
   if (actor_ctrl) {
-    auto owner = read_ptr(actor_ctrl + kChrCtrlOwnerOffset);
-    if (owner) {
+    uintptr_t owner = 0;
+    if (safe_read_ptr(actor_ctrl + kChrCtrlOwnerOffset, owner) && owner) {
       return owner;
     }
   }
@@ -319,8 +325,8 @@ uintptr_t resolve_player_chr(uintptr_t player_root, uintptr_t actor_ctrl) {
 
 uintptr_t resolve_chr_ctrl(uintptr_t chr_ins, uintptr_t fallback_ctrl) {
   if (chr_ins) {
-    auto chr_ctrl = read_ptr(chr_ins + kChrInsChrCtrlOffset);
-    if (chr_ctrl) {
+    uintptr_t chr_ctrl = 0;
+    if (safe_read_ptr(chr_ins + kChrInsChrCtrlOffset, chr_ctrl) && chr_ctrl) {
       return chr_ctrl;
     }
   }
@@ -338,7 +344,8 @@ void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl
     return;
   }
 
-  auto modifier = read_ptr(chr_ctrl + kChrCtrlModifierOffset);
+  uintptr_t modifier = 0;
+  safe_read_ptr(chr_ctrl + kChrCtrlModifierOffset, modifier);
   if (modifier) {
     uint32_t action_flags = 0;
     if (safe_read(modifier + kChrCtrlModifierActionFlagsOffset, &action_flags,
@@ -381,7 +388,8 @@ void restore_player_control_override(uintptr_t player_chr, uintptr_t fallback_ct
     g_player_override.active = false;
     return;
   }
-  auto modifier = read_ptr(chr_ctrl + kChrCtrlModifierOffset);
+  uintptr_t modifier = 0;
+  safe_read_ptr(chr_ctrl + kChrCtrlModifierOffset, modifier);
   if (modifier && g_player_override.has_action_flags) {
     if (safe_write(modifier + kChrCtrlModifierActionFlagsOffset,
                    &g_player_override.action_flags,
