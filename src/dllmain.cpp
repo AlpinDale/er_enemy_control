@@ -1,11 +1,11 @@
 #include <atomic>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
-#include <cstdarg>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
-#include <cstdlib>
 #include <windows.h>
 
 #include "pattern_scan.h"
@@ -92,8 +92,9 @@ struct TeamOverride {
   bool player_has_original = false;
 };
 
-TeamOverride g_team{false, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false,
-                    true, 0, 0, false};
+TeamOverride g_team{
+    false, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false, true, 0,
+    0,     false};
 
 struct PlayerControlOverride {
   bool active = false;
@@ -104,7 +105,6 @@ struct PlayerControlOverride {
 };
 
 PlayerControlOverride g_player_override;
-
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -187,7 +187,8 @@ void load_config() {
       if (parsed == 1 || parsed == 2 || parsed == 4) {
         g_team.size = parsed;
       }
-    } else if ((key == "player_neutralize" || key == "team_player_neutralize") &&
+    } else if ((key == "player_neutralize" ||
+                key == "team_player_neutralize") &&
                parse_u32(val, parsed)) {
       g_team.neutralize_player = (parsed != 0);
     } else if ((key == "player_neutral_value" ||
@@ -199,10 +200,10 @@ void load_config() {
   std::fclose(f);
 
   if (g_team.enabled) {
-    log_line("%s team override enabled: offset=0x%x size=%u neutralize=%u value=%u",
-             g_team.use_config ? "config" : "default", g_team.offset,
-             g_team.size, g_team.neutralize_player ? 1u : 0u,
-             g_team.player_neutral_value);
+    log_line(
+        "%s team override enabled: offset=0x%x size=%u neutralize=%u value=%u",
+        g_team.use_config ? "config" : "default", g_team.offset, g_team.size,
+        g_team.neutralize_player ? 1u : 0u, g_team.player_neutral_value);
   } else if (saw_enabled) {
     log_line("team override disabled by config");
   } else {
@@ -414,7 +415,8 @@ uintptr_t resolve_chr_ctrl(uintptr_t chr_ins, uintptr_t fallback_ctrl) {
   return fallback_ctrl;
 }
 
-void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl) {
+void apply_player_control_override(uintptr_t player_chr,
+                                   uintptr_t fallback_ctrl) {
   g_player_override.active = false;
   g_player_override.has_action_flags = false;
   g_player_override.has_ctrl_flags = false;
@@ -433,9 +435,10 @@ void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl
   uintptr_t owner = 0;
   if (safe_read_ptr(chr_ctrl + kChrCtrlOwnerOffset, owner) && owner &&
       owner != player_chr) {
-    log_line("player override: chr_ctrl owner mismatch (owner=0x%llx chr=0x%llx)",
-             static_cast<unsigned long long>(owner),
-             static_cast<unsigned long long>(player_chr));
+    log_line(
+        "player override: chr_ctrl owner mismatch (owner=0x%llx chr=0x%llx)",
+        static_cast<unsigned long long>(owner),
+        static_cast<unsigned long long>(player_chr));
     return;
   }
   uintptr_t modifier = 0;
@@ -448,8 +451,8 @@ void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl
       g_player_override.has_action_flags = true;
       action_flags |= kActionDisableLockOnBit;
       action_flags &= ~kActionDisableAbilityLockOnBit;
-      if (safe_write(modifier + kChrCtrlModifierActionFlagsOffset, &action_flags,
-                     sizeof(action_flags))) {
+      if (safe_write(modifier + kChrCtrlModifierActionFlagsOffset,
+                     &action_flags, sizeof(action_flags))) {
         log_line("player override: action_flags 0x%08x -> 0x%08x",
                  g_player_override.action_flags, action_flags);
       }
@@ -472,7 +475,8 @@ void apply_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl
   g_player_override.active = true;
 }
 
-void restore_player_control_override(uintptr_t player_chr, uintptr_t fallback_ctrl) {
+void restore_player_control_override(uintptr_t player_chr,
+                                     uintptr_t fallback_ctrl) {
   if (!g_player_override.active) {
     return;
   }
@@ -833,13 +837,12 @@ void log_team_values(const char *tag, uintptr_t player_root, uintptr_t target) {
   uint32_t tval = 0;
   bool okp = safe_read(player_root + g_team.offset, &pval, g_team.size);
   bool okt = safe_read(target + g_team.offset, &tval, g_team.size);
-  log_line("%s team values: player=0x%llx %s=%u target=0x%llx %s=%u off=0x%x size=%u",
-           tag,
-           static_cast<unsigned long long>(player_root),
+  log_line("%s team values: player=0x%llx %s=%u target=0x%llx %s=%u off=0x%x "
+           "size=%u",
+           tag, static_cast<unsigned long long>(player_root),
            okp ? "val" : "read_fail", okp ? pval : 0,
-           static_cast<unsigned long long>(target),
-           okt ? "val" : "read_fail", okt ? tval : 0,
-           g_team.offset, g_team.size);
+           static_cast<unsigned long long>(target), okt ? "val" : "read_fail",
+           okt ? tval : 0, g_team.offset, g_team.size);
 }
 
 void scan_team_ptr_candidates(uintptr_t base, const char *label) {
@@ -951,9 +954,8 @@ void restore_team_override_config(uintptr_t target) {
   }
   if (g_team.neutralize_player && g_team.player_has_original) {
     auto player_root = read_ptr(g_addrs.player_ptr_addr);
-    if (player_root &&
-        safe_write(player_root + g_team.offset, &g_team.player_original,
-                   g_team.size)) {
+    if (player_root && safe_write(player_root + g_team.offset,
+                                  &g_team.player_original, g_team.size)) {
       log_line("team override restored player: value=%u",
                g_team.player_original);
     } else {
@@ -967,8 +969,7 @@ void restore_team_override_config(uintptr_t target) {
 
 void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
                uintptr_t player_ptr_addr) {
-  uintptr_t target =
-      get_current_target(world_root, actor_mgr);
+  uintptr_t target = get_current_target(world_root, actor_mgr);
   if (!target) {
     return;
   }

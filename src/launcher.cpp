@@ -1,8 +1,8 @@
 #include <algorithm>
 #include <cctype>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
-#include <cstdarg>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -192,8 +192,7 @@ std::string format_win_error(DWORD err) {
     result.assign(buffer, size);
     LocalFree(buffer);
   }
-  while (!result.empty() &&
-         (result.back() == '\r' || result.back() == '\n')) {
+  while (!result.empty() && (result.back() == '\r' || result.back() == '\n')) {
     result.pop_back();
   }
   return result;
