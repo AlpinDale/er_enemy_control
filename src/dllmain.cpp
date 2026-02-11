@@ -90,15 +90,18 @@ struct TeamOverride {
   uint32_t size = 1;
   uint32_t target_original = 0;
   bool target_has_original = false;
+  uintptr_t target_ptr = 0;
   bool neutralize_player = true;
   uint32_t player_neutral_value = 0;
   uint32_t player_original = 0;
   bool player_has_original = false;
+  uintptr_t player_ptr = 0;
 };
 
 TeamOverride g_team{
-    false, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false, true, 0,
-    0,     false};
+    false, false, kDefaultTeamOffset, kDefaultTeamSize, 0, false, 0, true, 0, 0,
+    false, 0,
+};
 
 struct PlayerControlOverride {
   bool active = false;
@@ -195,6 +198,8 @@ void load_config() {
   g_team.player_neutral_value = 0;
   g_team.target_has_original = false;
   g_team.player_has_original = false;
+  g_team.target_ptr = 0;
+  g_team.player_ptr = 0;
 
   bool saw_enabled = false;
   FILE *f = std::fopen("erd_enemy_control.ini", "r");
@@ -1011,8 +1016,10 @@ void apply_team_override_config(uintptr_t player_root, uintptr_t target) {
       safe_read(target + g_team.offset, &target_val, g_team.size)) {
     g_team.target_original = target_val;
     g_team.target_has_original = true;
+    g_team.target_ptr = target;
     g_team.player_original = player_val;
     g_team.player_has_original = true;
+    g_team.player_ptr = player_root;
     if (safe_write(target + g_team.offset, &player_val, g_team.size)) {
       log_line("team override (config): off=0x%x size=%u player=%u target=%u",
                g_team.offset, g_team.size, player_val, target_val);
@@ -1040,21 +1047,27 @@ void restore_team_override_config(uintptr_t target) {
     return;
   }
   if (g_team.target_has_original) {
-    if (safe_write(target + g_team.offset, &g_team.target_original,
+    uintptr_t restore_target = g_team.target_ptr ? g_team.target_ptr : target;
+    if (restore_target && is_valid_chr_ins(restore_target) &&
+        safe_write(restore_target + g_team.offset, &g_team.target_original,
                    g_team.size)) {
-      log_line("team override restored (config): off=0x%x size=%u value=%u",
-               g_team.offset, g_team.size, g_team.target_original);
+      log_line("team override restored (config): off=0x%x size=%u value=%u "
+               "target=0x%llx",
+               g_team.offset, g_team.size, g_team.target_original,
+               static_cast<unsigned long long>(restore_target));
     } else {
       log_line("team override restore failed (config) at off=0x%x",
                g_team.offset);
     }
   }
   if (g_team.neutralize_player && g_team.player_has_original) {
-    auto player_root = read_ptr(g_addrs.player_ptr_addr);
-    if (player_root && safe_write(player_root + g_team.offset,
-                                  &g_team.player_original, g_team.size)) {
-      log_line("team override restored player: value=%u",
-               g_team.player_original);
+    uintptr_t restore_player = g_team.player_ptr;
+    if (restore_player && is_valid_chr_ins(restore_player) &&
+        safe_write(restore_player + g_team.offset, &g_team.player_original,
+                   g_team.size)) {
+      log_line("team override restored player: value=%u player=0x%llx",
+               g_team.player_original,
+               static_cast<unsigned long long>(restore_player));
     } else {
       log_line("team override restore failed (player) at off=0x%x",
                g_team.offset);
@@ -1062,6 +1075,8 @@ void restore_team_override_config(uintptr_t target) {
   }
   g_team.target_has_original = false;
   g_team.player_has_original = false;
+  g_team.target_ptr = 0;
+  g_team.player_ptr = 0;
 }
 
 void handle_f1(uintptr_t world_root, uintptr_t actor_mgr, uintptr_t actor_ctrl,
