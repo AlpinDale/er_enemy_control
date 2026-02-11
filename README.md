@@ -7,6 +7,9 @@ A clean-room implementation of the [Enemy control](https://www.nexusmods.com/eld
 - F2: release control and restore state.
 - F3: dump team-field candidates to `erd_enemy_control.log` (debug helper).
 - F4: reload `erd_enemy_control.ini` (team override config).
+- F5: zoom in camera.
+- F6: zoom out camera.
+- F7: reset camera zoom.
 
 ## Build (Windows, MSVC)
 

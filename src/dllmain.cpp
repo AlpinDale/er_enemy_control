@@ -66,6 +66,11 @@ constexpr uint32_t kChrDataHpOffset = 0x138;
 constexpr uint32_t kChrDataMaxHpOffset = 0x13C;
 constexpr uint32_t kChrDataMaxUncappedHpOffset = 0x140;
 constexpr uint32_t kChrDataBaseHpOffset = 0x144;
+constexpr uint32_t kWorldChrManChrCamOffset = 0x1ECE0;
+constexpr uint32_t kCSCamFovOffset = 0x50;
+constexpr float kCameraFovStep = 2.5f;
+constexpr float kCameraFovMin = 20.0f;
+constexpr float kCameraFovMax = 90.0f;
 const uint8_t kSigWorldPtr[] = {0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, 0x48,
                                 0x85, 0xC0, 0x74, 0x00, 0x48, 0x39, 0x88, 0x00,
                                 0x00, 0x00, 0x00, 0x75, 0x00, 0x89, 0xB1, 0x6C,
@@ -132,6 +137,18 @@ struct HpSyncState {
 
 HpSyncState g_hp_sync;
 
+struct CameraZoomState {
+  bool active = false;
+  float base_fov = 0.0f;
+  float current_fov = 0.0f;
+  float step = kCameraFovStep;
+  float min_fov = kCameraFovMin;
+  float max_fov = kCameraFovMax;
+  uintptr_t chr_cam = 0;
+};
+
+CameraZoomState g_camera;
+
 uintptr_t g_active_target = 0;
 uintptr_t g_active_player_chr = 0;
 uintptr_t g_active_player_root = 0;
@@ -143,6 +160,8 @@ void set_control_flags(uintptr_t actor_mgr, uintptr_t actor_ctrl, bool enabled);
 void start_hp_sync(uintptr_t player_chr, uintptr_t target);
 void update_hp_sync();
 void stop_hp_sync(const char *reason);
+void adjust_camera_zoom(uintptr_t world_root, float delta);
+void reset_camera_zoom(uintptr_t world_root);
 
 void log_msg(const char *msg) {
   OutputDebugStringA("[EREnemyControl] ");
@@ -228,6 +247,10 @@ void load_config() {
   g_team.target_ptr = 0;
   g_team.player_ptr = 0;
   g_hp_sync.enabled = true;
+  g_camera.active = false;
+  g_camera.base_fov = 0.0f;
+  g_camera.current_fov = 0.0f;
+  g_camera.chr_cam = 0;
 
   bool saw_enabled = false;
   bool saw_hp_sync = false;
@@ -235,6 +258,7 @@ void load_config() {
   if (!f) {
     log_line("team override enabled (default)");
     log_line("hp sync enabled (default)");
+    log_line("camera zoom hotkeys: F5 zoom in, F6 zoom out, F7 reset");
     return;
   }
   g_team.use_config = true;
@@ -295,6 +319,7 @@ void load_config() {
       stop_hp_sync("config disabled");
     }
   }
+  log_line("camera zoom hotkeys: F5 zoom in, F6 zoom out, F7 reset");
 }
 
 uintptr_t read_ptr(uintptr_t addr) {
@@ -690,6 +715,68 @@ void stop_hp_sync(const char *reason) {
     log_line("hp sync restored (%s)", reason);
   } else {
     log_line("hp sync restored");
+  }
+}
+
+bool read_camera_fov(uintptr_t world_root, uintptr_t &chr_cam, float &fov) {
+  chr_cam = 0;
+  fov = 0.0f;
+  if (!world_root) {
+    return false;
+  }
+  uintptr_t cam = 0;
+  if (!safe_read_ptr(world_root + kWorldChrManChrCamOffset, cam) || !cam) {
+    return false;
+  }
+  float value = 0.0f;
+  if (!safe_read(cam + kCSCamFovOffset, &value, sizeof(value))) {
+    return false;
+  }
+  chr_cam = cam;
+  fov = value;
+  return true;
+}
+
+void adjust_camera_zoom(uintptr_t world_root, float delta) {
+  uintptr_t cam = 0;
+  float fov = 0.0f;
+  if (!read_camera_fov(world_root, cam, fov)) {
+    log_line("camera zoom: chr_cam or fov unavailable");
+    return;
+  }
+  if (!g_camera.active || g_camera.chr_cam != cam) {
+    g_camera.active = true;
+    g_camera.chr_cam = cam;
+    g_camera.base_fov = fov;
+    g_camera.current_fov = fov;
+  }
+  float new_fov = g_camera.current_fov + delta;
+  new_fov = std::clamp(new_fov, g_camera.min_fov, g_camera.max_fov);
+  if (safe_write(cam + kCSCamFovOffset, &new_fov, sizeof(new_fov))) {
+    g_camera.current_fov = new_fov;
+    log_line("camera zoom: fov %.2f", new_fov);
+  }
+}
+
+void reset_camera_zoom(uintptr_t world_root) {
+  uintptr_t cam = 0;
+  float fov = 0.0f;
+  if (!read_camera_fov(world_root, cam, fov)) {
+    log_line("camera zoom: chr_cam or fov unavailable");
+    return;
+  }
+  if (!g_camera.active || g_camera.chr_cam != cam) {
+    g_camera.active = true;
+    g_camera.chr_cam = cam;
+    g_camera.base_fov = fov;
+    g_camera.current_fov = fov;
+    log_line("camera zoom: base fov %.2f", fov);
+    return;
+  }
+  float base = g_camera.base_fov > 0.0f ? g_camera.base_fov : fov;
+  if (safe_write(cam + kCSCamFovOffset, &base, sizeof(base))) {
+    g_camera.current_fov = base;
+    log_line("camera zoom: reset fov %.2f", base);
   }
 }
 
@@ -1327,6 +1414,12 @@ void tick() {
     debug_team_scan(world_root, actor_mgr, g_addrs.player_ptr_addr);
   } else if (GetAsyncKeyState(VK_F4) & 1) {
     load_config();
+  } else if (GetAsyncKeyState(VK_F5) & 1) {
+    adjust_camera_zoom(world_root, -g_camera.step);
+  } else if (GetAsyncKeyState(VK_F6) & 1) {
+    adjust_camera_zoom(world_root, g_camera.step);
+  } else if (GetAsyncKeyState(VK_F7) & 1) {
+    reset_camera_zoom(world_root);
   }
 
   if (g_control_active.load()) {
