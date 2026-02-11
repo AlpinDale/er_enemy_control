@@ -65,11 +65,14 @@ constexpr uint32_t kChrInsDeathFlagBit = 1u << 7;
 constexpr uint32_t kChrInsModuleContainerOffset = 0x190;
 constexpr uint32_t kWorldChrManChrCamOffset = 0x1ECE0;
 constexpr uint32_t kModuleContainerDataOffset = 0x0;
+constexpr uint32_t kModuleContainerPhysicsOffset = 0x68;
 constexpr uint32_t kChrDataHpOffset = 0x138;
 constexpr uint32_t kChrDataMaxHpOffset = 0x13C;
 constexpr uint32_t kChrDataMaxUncappedHpOffset = 0x140;
 constexpr uint32_t kChrDataBaseHpOffset = 0x144;
 constexpr uint32_t kCSCamFovOffset = 0x50;
+constexpr uint32_t kChrPhysicsChrHitHeightOffset = 0x2D0;
+constexpr uint32_t kChrPhysicsHitHeightOffset = 0x2E0;
 constexpr uint32_t kChrCtrlScaleXOffset = 0x2D4;
 constexpr uint32_t kChrCtrlScaleYOffset = 0x2D8;
 constexpr uint32_t kChrCtrlScaleZOffset = 0x2DC;
@@ -148,6 +151,7 @@ struct CameraOverrideState {
   float base_fov = 0.0f;
   float last_fov = 0.0f;
   float base_tag_y = 1.0f;
+  float base_height = 0.0f;
   float min_scale = kCameraScaleMin;
   float scale_factor = kCameraScaleFactor;
   float max_multiplier = kCameraMaxMultiplier;
@@ -271,6 +275,7 @@ void load_config() {
   g_hp_sync.enabled = true;
   g_camera.enabled = true;
   g_camera.base_tag_y = 1.0f;
+  g_camera.base_height = 0.0f;
   g_camera.min_scale = kCameraScaleMin;
   g_camera.scale_factor = kCameraScaleFactor;
   g_camera.max_multiplier = kCameraMaxMultiplier;
@@ -809,6 +814,35 @@ float read_chr_tag_y(uintptr_t chr_ins) {
   return y;
 }
 
+float read_chr_height(uintptr_t chr_ins) {
+  if (!chr_ins) {
+    return 0.0f;
+  }
+  uintptr_t container = 0;
+  if (!safe_read_ptr(chr_ins + kChrInsModuleContainerOffset, container) ||
+      !container) {
+    return 0.0f;
+  }
+  uintptr_t physics = 0;
+  if (!safe_read_ptr(container + kModuleContainerPhysicsOffset, physics) ||
+      !physics) {
+    return 0.0f;
+  }
+  float height = 0.0f;
+  if (safe_read(physics + kChrPhysicsHitHeightOffset, &height,
+                sizeof(height)) &&
+      height > 0.01f) {
+    return height;
+  }
+  float chr_height = 0.0f;
+  if (safe_read(physics + kChrPhysicsChrHitHeightOffset, &chr_height,
+                sizeof(chr_height)) &&
+      chr_height > 0.01f) {
+    return chr_height;
+  }
+  return 0.0f;
+}
+
 void start_camera_override(uintptr_t world_root, uintptr_t player_chr,
                            uintptr_t target) {
   if (!g_camera.enabled) {
@@ -834,6 +868,7 @@ void start_camera_override(uintptr_t world_root, uintptr_t player_chr,
   } else {
     g_camera.base_tag_y = 1.0f;
   }
+  g_camera.base_height = read_chr_height(player_chr);
   g_camera.active = true;
   update_camera_override(target);
 }
@@ -848,6 +883,15 @@ void update_camera_override(uintptr_t target) {
     float tag_scale = tag_y / g_camera.base_tag_y;
     if (tag_scale > scale) {
       scale = tag_scale;
+    }
+  }
+  if (g_camera.base_height > 0.01f) {
+    float target_height = read_chr_height(target);
+    if (target_height > 0.01f) {
+      float height_scale = target_height / g_camera.base_height;
+      if (height_scale > scale) {
+        scale = height_scale;
+      }
     }
   }
   float mult = 1.0f;
@@ -877,6 +921,7 @@ void stop_camera_override(const char *reason) {
   g_camera.active = false;
   g_camera.chr_cam = 0;
   g_camera.base_tag_y = 1.0f;
+  g_camera.base_height = 0.0f;
   if (reason) {
     log_line("camera zoom restored (%s)", reason);
   } else {
